@@ -334,11 +334,13 @@ class Pi0(model.BaseModel):
         noise: torch.Tensor | None = None,
         time: torch.Tensor | None = None,
         memory_inputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
-    ) -> torch.Tensor:
+        _return_prefix: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute flow matching loss.
 
         Returns:
             loss: (B, action_horizon) per-timestep MSE loss
+            With _return_prefix=True, also return this forward's prefix and valid mask.
         """
         B = actions.shape[0]
         device = actions.device
@@ -403,7 +405,10 @@ class Pi0(model.BaseModel):
 
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
-        return torch.mean(torch.square(v_t.float() - u_t), dim=-1)
+        loss = torch.mean(torch.square(v_t.float() - u_t), dim=-1)
+        if _return_prefix:
+            return loss, prefix_out, prefix_mask
+        return loss
 
     def build_prefix_cache(
         self, observation: model.Observation, *, inference_ops=None

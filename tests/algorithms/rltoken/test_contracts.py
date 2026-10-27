@@ -13,7 +13,11 @@ from .fakes import feature_spec, features
 
 
 class ContractsTest(unittest.TestCase):
-    def test_batched_feature_contexts_split_without_aliasing(self):
+    def test_batched_feature_contexts_split_without_aliasing_or_changing_scalar_digests(self):
+        import dataclasses
+
+        from dobot_nexus.algorithms.rltoken.identity import content_digest
+
         spec = feature_spec()
         packet = features(spec, batch=2)
         with self.assertRaisesRegex(ValueError, "action_contexts"):
@@ -25,6 +29,12 @@ class ContractsTest(unittest.TestCase):
         packet.latent.zero_()
         self.assertEqual(row.action_context["raw_state"], [[3, 4]])
         self.assertTrue(row.latent.eq(1).all())
+        old_fields = {
+            field.name: getattr(row, field.name)
+            for field in dataclasses.fields(row)
+            if field.name != "action_contexts"
+        }
+        self.assertEqual(content_digest(row), content_digest(old_fields))
         packet.action_contexts = [{}]
         with self.assertRaisesRegex(ValueError, "one dictionary"):
             packet.validate(spec)

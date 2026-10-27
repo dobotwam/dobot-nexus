@@ -46,3 +46,8 @@ the original operators; no parameters or checkpoint keys are added or replaced.
 Inference may also supply cached per-layer history K/V and native timestep
 modulations. History projections are recomputed for every request/graph replay
 and reused only across that request's Euler steps; training does not use them.
+
+RLToken adaptation: `compute_loss(..., _return_prefix=True)` also returns the
+same forward's prefix hidden states and validity mask. The default flow loss,
+random streams and parameter keys are unchanged. Token operators live outside
+this core and detach the prefix before reconstruction.
