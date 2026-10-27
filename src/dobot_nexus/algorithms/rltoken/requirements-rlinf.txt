@@ -1,0 +1,2 @@
+# Optional Stage 2 execution layer; install into the dedicated training environment.
+rlinf @ git+https://github.com/RLinf/RLinf.git@7e90641c4135229db6d3426950cdb45cee6259a6

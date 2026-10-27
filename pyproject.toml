@@ -62,7 +62,7 @@ where = ["src"]
 namespaces = false
 
 [tool.setuptools.package-data]
-"dobot_nexus.algorithms.rltoken" = ["NOTICE.md", "LICENSE"]
+"dobot_nexus.algorithms.rltoken" = ["requirements-rlinf.txt", "NOTICE.md", "LICENSE"]
 "dobot_nexus.models.pi0" = ["assets/*.model"]
 "dobot_nexus.models.pi05" = ["assets/*.model"]
 "dobot_nexus.models.pi05.deploy.profiles" = ["*.yaml"]

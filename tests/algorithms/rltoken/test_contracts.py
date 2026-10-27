@@ -1,5 +1,7 @@
+import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -64,6 +66,18 @@ class ContractsTest(unittest.TestCase):
         ):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 algorithm_target({"algorithm": value})
+        with self.assertRaisesRegex(ValueError, "algorithm.target"):
+            trainer_class({"runtime": {"launcher": "rlinf"}})
+        with (
+            patch.dict(os.environ, {"LOCAL_RANK": "0"}),
+            self.assertRaisesRegex(ValueError, "torchrun"),
+        ):
+            trainer_class(
+                {
+                    "algorithm": {"target": "tests.fakes:DummyVLAModule"},
+                    "runtime": {"launcher": "rlinf"},
+                }
+            )
 
     def test_optional_capabilities_preserve_existing_models(self):
         model = DummyVLAModule(Config({"model": Config({})}), mode="train")

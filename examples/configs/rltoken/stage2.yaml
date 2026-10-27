@@ -1,0 +1,61 @@
+schema_version: 1
+task: train
+exp:
+  name: rltoken_stage2
+  output_dir: runs
+  seed: 42
+algorithm:
+  target: dobot_nexus.algorithms.rltoken.training:RLTokenTrainer
+  recipe: rlt_ac_fixed_v1
+  learning:
+    gamma: 0.99
+    tau: 0.005
+    q_weight: 1.0
+    bc_weight: 1.0
+    reference_dropout: 0.0
+    actor_lr: 0.0003
+    critic_lr: 0.0003
+    critic_actor_ratio: 1
+    target_update_frequency: 1
+    batch_size: 256
+    warmup: 256
+    updates_per_new_transition: 1
+    seed: 42
+model:
+  target: dobot_nexus.algorithms.rltoken.policy:RLTokenPolicy
+  state_dim: 14
+  action_dim: 14
+  action_horizon: 1
+  features:
+    artifact: ${env:RLT_FEATURE_ARTIFACT,/path/to/stage1/artifact}
+  rltoken:
+    chunk_size: 1
+    hidden_dims: [256, 256]
+    fixed_std: 0.1
+data:
+  replay:
+    capacity: 100000
+    max_bytes: 1073741824
+    max_record_bytes: 16777216
+runtime:
+  launcher: rlinf
+  fsdp:
+    enabled: false
+  resources:
+    rollout_gpu: 0
+    learner_gpu: 1
+  rpc_timeout: 120
+  max_message_bytes: 67108864
+train:
+  max_steps: 10000
+  save_every: 1000
+  grad_accum_steps: 1
+  resume_from: null
+environment:
+  target: ${env:RLT_ENV_TARGET,your_robot_agent:RobotAgent}
+  env_id: robot-0
+  timeout: 30
+  reward_mode: per_step
+  bootstrap_truncation: false
+  max_chunks: 100000
+  min_actor_updates: 100

@@ -94,7 +94,12 @@ from dobot_nexus.core.config import load_config, resolve_training_runtime
 
 config = load_config(sys.argv[1], sys.argv[3:], expected_task="train")
 try:
-    runtime = resolve_training_runtime(config, world_size=int(sys.argv[2]))
+    runtime = config.get("runtime", {})
+    if runtime.get("launcher") == "rlinf":
+        if runtime.get("fsdp", {}).get("enabled", False):
+            raise ValueError("RLinf Stage 2 does not support runtime.fsdp.enabled=true")
+    else:
+        runtime = resolve_training_runtime(config, world_size=int(sys.argv[2]))
 except ValueError as exc:
     print(str(exc), file=sys.stderr)
     sys.exit(2)
@@ -104,7 +109,10 @@ print(f"{launcher}\t{str(fsdp_enabled).lower()}")
 ' "${CONFIG}" "${NPROC_PER_NODE}" "${OVERRIDES[@]}"
 )"
 IFS=$'\t' read -r RUNTIME_LAUNCHER FSDP_ENABLED <<< "${RUNTIME_INFO}"
-if [[ "${NPROC_PER_NODE}" -eq 1 ]]; then
+if [[ "${RUNTIME_LAUNCHER}" == "rlinf" ]]; then
+  NPROC_PER_NODE=1
+  COMMAND=("${PYTHON_BIN}" -m dobot_nexus.cli.main train)
+elif [[ "${NPROC_PER_NODE}" -eq 1 ]]; then
   # This is a fresh single-process job, even when invoked from a torchrun worker.
   # Include the clean environment in COMMAND so --dry-run prints the same launch.
   COMMAND=(

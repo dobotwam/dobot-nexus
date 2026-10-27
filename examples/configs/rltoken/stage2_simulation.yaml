@@ -1,0 +1,18 @@
+extends: stage2.yaml
+
+exp:
+  name: rltoken_simulation
+runtime:
+  resources:
+    rollout_gpu: 0
+    learner_gpu: 1
+    # May share rollout_gpu; account for simulation/rendering and model memory together.
+    env_gpu: 0
+environment:
+  kind: simulation
+  batch_size: 16
+  env_id: sim
+  target: ${env:RLT_SIM_TARGET,your_simulator.agent:VectorAgent}
+# Supply a feature Artifact and model dimensions matching the simulator's controller.
+# environment.batch_size controls rollout parallelism; algorithm.learning.batch_size
+# remains the independent Replay minibatch size.

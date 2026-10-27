@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Sequence
 
 from dobot_nexus.core.config import algorithm_target, load_config
@@ -10,8 +11,13 @@ from dobot_nexus.training import BCTrainer
 
 
 def trainer_class(config):
-    """Select the configured Trainer before Experiment creates files."""
+    """Validate driver ownership before Experiment creates files."""
     target = algorithm_target(config)
+    if config.get("runtime", {}).get("launcher", "local") == "rlinf":
+        if target is None:
+            raise ValueError("runtime.launcher=rlinf requires algorithm.target.")
+        if any(key in os.environ for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE")):
+            raise ValueError("RLinf requires one driver; do not launch it with torchrun.")
     return import_from_string(target) if target else BCTrainer
 
 
