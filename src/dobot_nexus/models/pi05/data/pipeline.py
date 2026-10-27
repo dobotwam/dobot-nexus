@@ -273,7 +273,15 @@ class Pi05Pipeline:
         self.model_config = model_config
         data = root_config.get("data", {})
         self.normalization = data.get("normalization", "zscore")
-        if self.normalization not in {"zscore", "quantile"}:
+        if isinstance(self.normalization, Mapping):
+            # Deployed v1 Artifacts record the codec type and version together.
+            # Resolve locally without mutating the saved inference configuration.
+            if (set(self.normalization) != {"type", "version"}
+                    or type(self.normalization["version"]) is not int
+                    or self.normalization["version"] != 1):
+                raise ValueError("data.normalization mapping requires type and version: 1.")
+            self.normalization = self.normalization["type"]
+        if not isinstance(self.normalization, str) or self.normalization not in {"zscore", "quantile"}:
             raise ValueError("data.normalization must be zscore or quantile.")
         self.image_fields, self.state_key, self.action_key, self.language_key = _field_mapping(
             root_config

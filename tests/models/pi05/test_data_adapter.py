@@ -78,6 +78,30 @@ class Pi05DataAdapterTest(unittest.TestCase):
 
 
 class NormalizationTest(unittest.TestCase):
+    def test_versioned_artifact_normalization_preserves_codec_and_saved_config(self):
+        with tempfile.TemporaryDirectory() as root:
+            for kind in ("quantile", "zscore"):
+                with self.subTest(kind=kind):
+                    saved = {"type": kind, "version": 1}
+                    legacy = self.pipeline(root, saved)
+                    current = self.pipeline(root, kind)
+                    values = np.array([[-4.0, 3.0], [10.0, 3.0]], dtype=np.float32)
+                    np.testing.assert_array_equal(
+                        legacy.normalize(values, "state"), current.normalize(values, "state")
+                    )
+                    np.testing.assert_array_equal(
+                        legacy.unnormalize(values, "actions"), current.unnormalize(values, "actions")
+                    )
+                    self.assertEqual(legacy.root_config["data"]["normalization"], saved)
+            for invalid in (
+                {"type": "quantile"}, {"type": "quantile", "version": 2},
+                {"type": "quantile", "version": True},
+                {"type": "quantile", "version": 1, "clip": True},
+                {"type": [], "version": 1}, [], None,
+            ):
+                with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "normalization"):
+                    self.pipeline(root, invalid)
+
     def test_two_camera_training_and_runtime_use_the_same_missing_view_mask(self):
         from dobot_nexus.core.contracts import ObservationBatch
 
