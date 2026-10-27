@@ -37,6 +37,35 @@ class TinyPrefixCore(_FakeCore):
 
 
 class Stage1Test(unittest.TestCase):
+    def test_normalized_joint_delta_codec_roundtrip_and_controller_identity(self):
+        codec = {
+            "name": "normalized_joint_delta_v1", "low": [-1, -1], "high": [1, 1],
+            "units": "normalized_joint_delta_and_gripper", "reference_bounds": "clip",
+            "controller": {"mode": "pd_joint_delta_pos", "delta_reference": "current_qpos",
+                           "arm_delta_low": [-0.1], "arm_delta_high": [0.1],
+                           "gripper_position_low": -0.01, "gripper_position_high": 0.04},
+        }
+        self.config.model.rltoken.action_codec = _wrap(codec)
+        model = Pi05RLTokenModel(self.config, mode="train")
+        adapter = model.adapter
+        context = {"observation_id": "x", "raw_state": [[0, 0]], "executed_steps": [1]}
+        commands = np.array([[[0.2, -0.8]]], np.float32)
+        encoded = adapter.encode_executed_actions(commands, aux=context)
+        np.testing.assert_allclose(
+            adapter.decode_actions(encoded.actions).actions, commands, atol=1e-7
+        )
+        self.assertTrue(encoded.encodable_mask.all())
+        invalid = adapter.encode_executed_actions(commands * 10, aux=context)
+        self.assertFalse(invalid.encodable_mask.all())
+        reference = adapter.decode_vla_actions(np.array([[[2, -2]]]), aux=context)
+        np.testing.assert_array_equal(reference.actions, [[[1, -1]]])
+        with self.assertRaisesRegex(ValueError, "nonfinite"):
+            adapter.decode_vla_actions(np.array([[[np.nan, 0]]]), aux=context)
+        before = model.rl_feature_spec.feature_id
+        self.config.model.rltoken.action_codec.controller.arm_delta_high = [0.2]
+        changed = Pi05RLTokenModel(self.config, mode="train")
+        self.assertNotEqual(before, changed.rl_feature_spec.feature_id)
+
     def test_camera_slot_assignment_changes_frozen_feature_identity(self):
         from dataclasses import replace
 
@@ -46,6 +75,17 @@ class Stage1Test(unittest.TestCase):
         mapping["base"], mapping["left_wrist"] = mapping["left_wrist"], mapping["base"]
         model.pi05_config = replace(model.pi05_config, camera_mapping=mapping)
         self.assertNotEqual(before, model.rl_feature_spec.feature_id)
+
+    def test_joint_delta_codec_rejects_implicit_scaling_and_mismatched_units(self):
+        self.config.model.rltoken.action_codec = _wrap({
+            "name": "normalized_joint_delta_v1", "low": [-1, -1], "high": [1, 1],
+            "units": "normalized_joint_delta_and_gripper",
+        })
+        with self.assertRaisesRegex(ValueError, "current_qpos"):
+            Pi05RLTokenModel(self.config, mode="train")
+        self.config.model.rltoken.action_codec.units = "rad"
+        with self.assertRaisesRegex(ValueError, "units"):
+            Pi05RLTokenModel(self.config, mode="train")
 
     def test_batched_features_preserve_per_observation_codec_context(self):
         model = Pi05RLTokenModel(self.config, mode="train").eval().requires_grad_(False)

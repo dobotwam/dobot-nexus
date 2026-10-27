@@ -14,7 +14,7 @@ class Pi05RLDataAdapter(Pi05DataAdapter):
         super().__init__(config, root_config, observation_type)
         codec = root_config.model.rltoken["action_codec"]
         self.codec_id = codec.get("name")
-        if self.codec_id != "absolute_affine_v1":
+        if self.codec_id not in {"absolute_affine_v1", "normalized_joint_delta_v1"}:
             raise ValueError("Unsupported Pi0.5 RLToken action codec.")
         self.low = torch.tensor(codec["low"], dtype=torch.float32)
         self.high = torch.tensor(codec["high"], dtype=torch.float32)
@@ -26,9 +26,50 @@ class Pi05RLDataAdapter(Pi05DataAdapter):
             or not (self.high > self.low).all()
         ):
             raise ValueError("RL command bounds must be finite and strictly ordered.")
+        self.reference_bounds = codec.get("reference_bounds", "reject")
+        if self.reference_bounds not in {"reject", "clip"}:
+            raise ValueError("action_codec.reference_bounds must be reject or clip.")
+        if self.codec_id == "normalized_joint_delta_v1":
+            self._validate_joint_delta(codec)
+        elif self.reference_bounds != "reject":
+            raise ValueError("Absolute-command reference bounds must use reject.")
+
+    def _validate_joint_delta(self, codec):
+        if not torch.equal(self.low, -torch.ones_like(self.low)) or not torch.equal(
+            self.high, torch.ones_like(self.high)
+        ):
+            raise ValueError("Normalized joint-delta command bounds must be exactly [-1,1].")
+        if codec.get("units") != "normalized_joint_delta_and_gripper":
+            raise ValueError("Joint-delta codec requires explicit normalized command units.")
+        controller = codec.get("controller", {})
+        if (controller.get("mode") != "pd_joint_delta_pos"
+                or controller.get("delta_reference") != "current_qpos"):
+            raise ValueError("Joint-delta codec requires pd_joint_delta_pos from current_qpos.")
+        for low_key, high_key, shape in (
+            ("arm_delta_low", "arm_delta_high", (self.config.action_dim - 1,)),
+            ("gripper_position_low", "gripper_position_high", ()),
+        ):
+            try:
+                low = np.asarray(controller[low_key], dtype=np.float64)
+                high = np.asarray(controller[high_key], dtype=np.float64)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("Joint-delta codec requires controller scaling metadata.") from exc
+            if (low.shape != shape or high.shape != shape or not np.isfinite(low).all()
+                    or not np.isfinite(high).all() or not (high > low).all()):
+                raise ValueError("Joint-delta controller bounds have invalid dimensions or values.")
+        if self.pipeline.action_transform.kind != "absolute":
+            raise ValueError("Already normalized joint deltas must not be differenced again.")
 
     def decode_vla_actions(self, actions, *, aux):
-        return super().decode_actions(actions, aux=aux)
+        output = super().decode_actions(actions, aux=aux)
+        if self.reference_bounds == "clip":
+            if not np.isfinite(output.actions).all():
+                raise ValueError("Cannot clip nonfinite reference actions.")
+            return PolicyOutput(
+                np.clip(output.actions, -1, 1),
+                aux={**output.aux, "reference_bounds": "clip"},
+            )
+        return output
 
     def decode_actions(self, actions, *, aux=None):
         value = torch.as_tensor(actions, dtype=torch.float32).detach().cpu()
