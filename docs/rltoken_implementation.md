@@ -202,7 +202,8 @@ examples/train.sh --config examples/configs/rltoken/stage2.yaml --gpus 0,1 \
 源代码归属见 [`NOTICE.md`](../src/dobot_nexus/algorithms/rltoken/NOTICE.md)。
 
 真实环境验收应分别记录 Ray 通信与异常清理、Actor/双 Q 参数更新、两 GPU 稳态
-吞吐与数值、保存恢复、冻结评测以及真机控制时延。
+吞吐与数值、保存恢复、冻结评测以及真机控制时延。MetaFine 字母插槽的协议与
+验收方法见[仿真评测文档](maniskill_evaluation_plan.md#metafine-corl-字母插槽任务)。
 这些 smoke、性能脚本及报告按仓库约定放在 Git 忽略的 `local_script/`。CPU 单元测试
 通过表示上述模块契约成立，不表示已经取得训练加速或真机任务成功。
 
