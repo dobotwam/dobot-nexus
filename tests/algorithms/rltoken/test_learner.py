@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import torch
 
+from dobot_nexus.algorithms.rltoken.checkpoint import load_resume, save_resume
 from dobot_nexus.algorithms.rltoken.configuration import HeadConfig, LearningConfig
 from dobot_nexus.algorithms.rltoken.identity import content_digest
 from dobot_nexus.algorithms.rltoken.learner import Learner
@@ -15,6 +16,20 @@ from .fakes import feature_spec, transition
 
 
 class LearnerTest(unittest.TestCase):
+    def test_modified_checkpoint_is_rejected_before_state_changes(self):
+        learner = self.learner()
+        learner.update(incoming=[transition(), transition(1)])
+        checkpoint = save_resume(
+            self.root / "resume", learner, task_fingerprint="task", run_id="run"
+        )
+        before = content_digest(learner.state_dict())
+        state = torch.load(checkpoint / "state.pt", weights_only=False)
+        state["critic_updates"] += 10
+        torch.save(state, checkpoint / "state.pt")
+        with self.assertRaisesRegex(ValueError, "corrupt"):
+            load_resume(checkpoint, learner, task_fingerprint="task")
+        self.assertEqual(content_digest(learner.state_dict()), before)
+
     def setUp(self):
         torch.set_num_threads(1)
         self.temp = tempfile.TemporaryDirectory()
@@ -66,6 +81,22 @@ class LearnerTest(unittest.TestCase):
                 for p in learner.target.parameters()
             )
         )
+
+    def test_checkpoint_barrier_rewinds_two_prefetched_batches(self):
+        learner = self.learner()
+        learner.update(incoming=[transition(i) for i in range(4)])
+        learner.prefetch(2)
+        checkpoint = save_resume(
+            self.root / "resume", learner, task_fingerprint="task", run_id="run"
+        )
+        self.assertFalse(learner.prefetched)
+        learner.update(3)
+        expected = learner.state_dict()
+        load_resume(checkpoint, learner, task_fingerprint="task")
+        learner.update(3)
+        self.assertEqual(content_digest(learner.state_dict()), content_digest(expected))
+        with self.assertRaisesRegex(ValueError, "task/reward"):
+            load_resume(checkpoint, learner, task_fingerprint="different")
 
     def test_optimizer_failure_prevents_snapshot_and_further_updates(self):
         learner = self.learner()
