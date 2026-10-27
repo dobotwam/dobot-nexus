@@ -30,3 +30,27 @@ def features(spec=None, batch=1):
         torch.ones(batch, spec.reference_horizon, dtype=torch.bool),
         spec.feature_id,
     )
+
+
+def transition(index=0, spec=None, chunk_size=2, **overrides):
+    from dobot_nexus.algorithms.rltoken.transitions import ObservationID, Transition
+    from dobot_nexus.core.contracts import EncodedActionBatch
+
+    spec = spec or feature_spec()
+    args = dict(
+        observation_id=ObservationID("run", "env", "session", "episode", str(index)),
+        chunk_id=str(index),
+        features=features(spec),
+        executed=EncodedActionBatch(
+            torch.full((1, chunk_size, spec.action_dim), 0.25),
+            torch.ones(1, chunk_size, dtype=torch.bool),
+            torch.ones(1, chunk_size, dtype=torch.bool),
+            spec.action_codec,
+        ),
+        rewards=torch.ones(chunk_size),
+        takeover=torch.zeros(chunk_size, dtype=torch.bool),
+        next_features=features(spec),
+        next_observation_id=ObservationID("run", "env", "session", "episode", str(index + 1)),
+    )
+    args.update(overrides)
+    return Transition(**args)
