@@ -5,6 +5,10 @@ from typing import Any
 
 import numpy as np
 
+from dobot_nexus.core.rl_contracts import EncodedActionBatch as EncodedActionBatch
+from dobot_nexus.core.rl_contracts import RLFeatureBatch as RLFeatureBatch
+from dobot_nexus.core.rl_contracts import RLFeatureSpec as RLFeatureSpec
+
 
 def _as_numpy(value: Any) -> np.ndarray:
     try:
