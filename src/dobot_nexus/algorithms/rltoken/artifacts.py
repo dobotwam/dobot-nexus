@@ -104,3 +104,53 @@ def write_model_bundle(root, model, config):
     }
     save_config(manifest, root / "manifest.yaml")
     return root
+
+
+def retain_feature_bundle(source, destination):
+    """Materialize run-owned weights/assets before the long-lived provider is constructed."""
+    from .checkpoint import _fsync, _sync_dir
+
+    destination = Path(destination)
+    _, expected, _ = feature_metadata(source)
+    if destination.exists():
+        if feature_metadata(destination)[1] != expected:
+            raise ValueError("Run's frozen feature bundle disagrees with this policy.")
+        return destination
+    provider, config, _ = load_provider(source)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = destination.with_name(".features-" + uuid.uuid4().hex)
+    write_model_bundle(staging, provider, config)
+    for file in staging.rglob("*"):
+        if file.is_file():
+            _fsync(file)
+    for directory in sorted((p for p in staging.rglob("*") if p.is_dir()), reverse=True):
+        _sync_dir(directory)
+    _sync_dir(staging)
+    staging.rename(destination)
+    _sync_dir(destination.parent)
+    return destination
+
+
+def restore_policy_config(config):
+    if not config.model.get("artifact"):
+        return config
+    root = resolve_artifact(config.model.artifact)
+    manifest = load_manifest(root)
+    trained = load_config(root / "config_resolved.yaml", expected_task="train")
+    files = manifest["files"]
+    relative = Path(files.get("feature_manifest", ""))
+    if not relative.name or relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("RLToken Artifact requires a relative feature_manifest file.")
+    child_manifest = root / relative
+    if not child_manifest.is_file():
+        raise FileNotFoundError(f"Missing bundled feature manifest: {child_manifest}")
+    if manifest.get("weights_sha256") != file_digest(artifact_weight_path(root)):
+        raise ValueError("Actor deployment weight checksum mismatch.")
+    restored = clone_config(config)
+    restored.model["rltoken"] = trained.model.rltoken
+    restored.model["features"] = {"artifact": str(child_manifest.parent)}
+    restored.model.checkpoint = str(artifact_weight_path(root))
+    _, spec, _ = feature_metadata(child_manifest.parent)
+    if spec.to_dict() != RLFeatureSpec.from_dict(manifest["model"]["rl_features"]).to_dict():
+        raise ValueError("Inner and outer feature specifications disagree.")
+    return clone_config(restored)
