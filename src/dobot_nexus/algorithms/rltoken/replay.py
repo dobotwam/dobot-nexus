@@ -48,6 +48,7 @@ class Replay:
         updates_per_new_transition=1,
         seed=0,
         task_fingerprint="",
+        allow_terminal_chunks=False,
     ):
         if min(capacity, max_bytes, max_record_bytes) <= 0:
             raise ValueError("Replay bounds must be positive.")
@@ -56,13 +57,17 @@ class Replay:
         self.spec, self.chunk_size = spec, chunk_size
         self.capacity, self.max_bytes, self.max_record_bytes = capacity, max_bytes, max_record_bytes
         self.utd = updates_per_new_transition
+        if type(allow_terminal_chunks) is not bool:
+            raise ValueError("allow_terminal_chunks must be a boolean.")
+        self.allow_terminal_chunks = allow_terminal_chunks
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(str(path))
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA synchronous=FULL")
         self.connection.execute("CREATE TABLE IF NOT EXISTS metadata (identity TEXT NOT NULL)")
         identity = content_digest(
-            {"spec": spec, "chunk_size": chunk_size, "utd": self.utd, "task": task_fingerprint}
+            {"spec": spec, "chunk_size": chunk_size, "utd": self.utd, "task": task_fingerprint,
+             **({"terminal_chunks": "candidate_completion_v2"} if allow_terminal_chunks else {})}
         )
         old = self.connection.execute("SELECT identity FROM metadata").fetchone()
         if old and old[0] != identity:
@@ -138,7 +143,9 @@ class Replay:
                 raise ValueError("Finalization may only resolve rewards and the record gate.")
         elif finalize:
             raise ValueError("Cannot finalize an unknown pending transition.")
-        status, reason = row.admission(self.spec, self.chunk_size)
+        status, reason = row.admission(
+            self.spec, self.chunk_size, allow_terminal_chunks=self.allow_terminal_chunks
+        )
         payload = _dump(row)
         if len(payload) > min(self.max_record_bytes, self.max_bytes):
             raise ValueError("Transition exceeds Replay byte bounds.")

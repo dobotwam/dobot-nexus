@@ -49,7 +49,7 @@ class Learner:
                 "heads": heads,
                 "learning": asdict(config),
                 "recipe": recipe_identity(
-                    "rlt_ac_fixed_v1"
+                    "rlt_ac_terminal_v2" if replay.allow_terminal_chunks else "rlt_ac_fixed_v1"
                 ),
             }
         )

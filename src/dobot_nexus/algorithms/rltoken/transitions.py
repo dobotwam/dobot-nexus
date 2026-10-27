@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import torch
 
@@ -46,6 +46,11 @@ class Transition:
     candidate_commands: object = None
     executed_commands: object = None
     command_id: str | None = None
+    # A macro-action is selected before execution. On a true terminal prefix,
+    # its unexecuted suffix cannot affect the return; it is not execution evidence.
+    terminal_candidate_actions: torch.Tensor | None = field(
+        default=None, metadata={"digest_omit_none": True}
+    )
 
     @property
     def key(self):
@@ -66,6 +71,10 @@ class Transition:
             self.executed.action_codec,
         )
         result.takeover = self.takeover.detach().cpu().contiguous().clone()
+        if self.terminal_candidate_actions is not None:
+            result.terminal_candidate_actions = (
+                self.terminal_candidate_actions.detach().cpu().float().contiguous().clone()
+            )
         result.rewards = (
             self.rewards.detach().cpu().float().contiguous().clone()
             if self.rewards is not None
@@ -73,7 +82,7 @@ class Transition:
         )
         return result
 
-    def admission(self, spec: RLFeatureSpec, chunk_size: int):
+    def admission(self, spec: RLFeatureSpec, chunk_size: int, *, allow_terminal_chunks=False):
         if not self.reward_finalized or self.accepted is None:
             return "pending", "awaiting_reward_or_gate"
         if self.accepted is not True:
@@ -89,9 +98,24 @@ class Transition:
                 spec.action_dim,
             ):
                 return "rejected", "fixed_chunk_shape"
-            if not self.executed.executed_mask.all():
-                return "rejected", "short_chunk"
-            if not self.executed.encodable_mask.all():
+            mask = self.executed.executed_mask
+            short = not bool(mask.all())
+            if short:
+                if not allow_terminal_chunks or not self.terminated:
+                    return "rejected", "short_chunk"
+                count = int(mask.sum())
+                if count == 0 or not torch.equal(
+                    mask, (torch.arange(chunk_size, device=mask.device) < count)[None]
+                ):
+                    return "rejected", "invalid_terminal_prefix"
+                candidate = self.terminal_candidate_actions
+                if (not isinstance(candidate, torch.Tensor)
+                        or candidate.shape != self.executed.actions.shape
+                        or not candidate.is_floating_point()
+                        or not torch.isfinite(candidate).all()
+                        or candidate.requires_grad or (candidate.abs() > 1.000001).any()):
+                    return "rejected", "missing_or_invalid_terminal_candidate"
+            if not self.executed.encodable_mask[mask].all():
                 return "rejected", "unencodable_command"
             if (
                 self.rewards is None
@@ -101,6 +125,8 @@ class Transition:
                 return "rejected", "missing_or_invalid_reward"
             if self.takeover.shape != (chunk_size,) or self.takeover.dtype != torch.bool:
                 return "rejected", "takeover_must_describe_executed_steps"
+            if short and (self.rewards[~mask[0]].ne(0).any() or self.takeover[~mask[0]].any()):
+                return "rejected", "terminal_padding_has_feedback"
             if self.source not in {"actor", "reference", "human"}:
                 return "rejected", "unknown_action_source"
             if (self.source == "actor") != (self.actor_version is not None):
@@ -119,7 +145,7 @@ class Transition:
                     return "rejected", "next_batch_size"
         except (ValueError, TypeError) as exc:
             return "rejected", str(exc)
-        return "admitted", "complete_fixed_chunk"
+        return "admitted", "terminal_prefix" if short else "complete_fixed_chunk"
 
     def finalize(self, *, rewards, accepted=True):
         if self.reward_finalized and self.accepted is not None:
@@ -134,7 +160,13 @@ def training_batch(rows, chunk_size, device):
     current = [row.features for row in rows]
     reference = cat("reference_actions", current)[:, :chunk_size]
     executed = torch.cat([row.executed.actions for row in rows]).to(device)
-    critic_actions = executed
+    critic_actions = torch.cat([
+        torch.where(row.executed.executed_mask[..., None], row.executed.actions,
+                    row.terminal_candidate_actions)
+        if row.terminated and not row.executed.executed_mask.all()
+        else row.executed.actions
+        for row in rows
+    ]).to(device)
     takeover = torch.stack([row.takeover for row in rows]).to(device)
     # Clone through torch.where; neither raw reference nor next reference is modified.
     bc_target = torch.where(takeover[..., None], executed, reference)

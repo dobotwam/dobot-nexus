@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 def recipe_identity(name):
     recipes = {
         "rlt_ac_fixed_v1": "rlt_ac_fixed_replace_for_training_v1",
+        "rlt_ac_terminal_v2": "rlt_ac_terminal_candidate_completion_v2",
     }
     if name not in recipes:
         raise ValueError(f"Unknown RLToken recipe {name!r}; expected one of {tuple(recipes)}.")
