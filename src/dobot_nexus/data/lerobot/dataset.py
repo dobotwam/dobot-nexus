@@ -121,10 +121,9 @@ class LocalLeRobotV21Dataset(torch.utils.data.Dataset):
     ) -> None:
         try:
             from datasets import load_dataset
-            from lerobot.datasets.video_utils import get_safe_default_codec
         except ModuleNotFoundError as exc:
             raise ImportError(
-                "Local LeRobot v2.1 training requires `datasets` and `lerobot`."
+                "Local LeRobot v2.1 training requires `datasets`."
             ) from exc
 
         self.root = root
@@ -132,19 +131,32 @@ class LocalLeRobotV21Dataset(torch.utils.data.Dataset):
         self.action_key = action_key
         self.action_horizon = action_horizon
         self.tolerance_s = tolerance_s
-        self.video_backend = get_safe_default_codec()
         self.video_keys = [
             str(key)
             for key, feature in self.info.get("features", {}).items()
             if feature.get("dtype") == "video"
         ]
-        if not self.video_keys:
-            raise ValueError("The local LeRobot v2.1 reader requires video camera features.")
+        self.image_keys = [
+            str(key)
+            for key, feature in self.info.get("features", {}).items()
+            if feature.get("dtype") == "image"
+        ]
+        if not self.video_keys and not self.image_keys:
+            raise ValueError("The local LeRobot v2.1 reader requires image or video camera features.")
+        if self.video_keys:
+            try:
+                from lerobot.datasets.video_utils import get_safe_default_codec
+            except ModuleNotFoundError as exc:
+                raise ImportError("LeRobot v2.1 video cameras require `lerobot`.") from exc
+            self.video_backend = get_safe_default_codec()
 
         data_root = self.root / "data"
         if not data_root.is_dir():
             raise FileNotFoundError(f"LeRobot v2.1 data directory not found: {data_root}.")
         self.hf_dataset = load_dataset("parquet", data_dir=str(data_root), split="train")
+        # Selecting columns before indexing avoids decoding future camera frames
+        # when assembling an action chunk from image-backed datasets.
+        self.action_dataset = self.hf_dataset.select_columns([self.action_key])
 
         episodes = load_jsonl(self.root / "meta" / "episodes.jsonl")
         self.episode_bounds: dict[int, tuple[int, int]] = {}
@@ -181,9 +193,11 @@ class LocalLeRobotV21Dataset(torch.utils.data.Dataset):
             max(episode_start, min(episode_end - 1, int(index) + offset))
             for offset in range(self.action_horizon)
         ]
-        action_rows = self.hf_dataset[action_indices][self.action_key]
+        action_rows = self.action_dataset[action_indices][self.action_key]
         item[self.action_key] = np.asarray(action_rows, dtype=np.float32)
 
+        if not self.video_keys:
+            return item
         timestamp = float(item["timestamp"])
         episode_chunk = episode_index // int(self.info.get("chunks_size", 1000))
         video_template = str(self.info["video_path"])

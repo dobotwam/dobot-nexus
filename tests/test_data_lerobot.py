@@ -282,5 +282,48 @@ class LeRobotParquetNormStatsTest(unittest.TestCase):
             np.testing.assert_allclose(stats["actions"].mean, [2.0, 350.0])
 
 
+@unittest.skipUnless(importlib.util.find_spec("datasets"), "datasets is optional")
+class LeRobotImageSourceTest(unittest.TestCase):
+    def test_embedded_images_and_actions_remain_inside_episode(self) -> None:
+        import io
+        from datasets import Dataset, Features, Image, Sequence, Value
+        from PIL import Image as PILImage
+        from dobot_nexus.data.lerobot.dataset import LeRobotSource
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "meta").mkdir()
+            (root / "data").mkdir()
+            info = {"codebase_version": "v2.1", "fps": 10,
+                    "features": {"image": {"dtype": "image"}}}
+            (root / "meta/info.json").write_text(json.dumps(info))
+            (root / "meta/episodes.jsonl").write_text(
+                '{"episode_index": 0, "length": 2}\n'
+                '{"episode_index": 1, "length": 1}\n')
+            (root / "meta/tasks.jsonl").write_text(
+                '{"task_index": 0, "task": "insert the peg in the hole"}\n')
+            encoded = io.BytesIO()
+            PILImage.new("RGB", (4, 3), (19, 23, 47)).save(encoded, format="PNG")
+            dataset = Dataset.from_dict({
+                "image": [{"bytes": encoded.getvalue(), "path": None}] * 3,
+                "action": [[0.1], [0.2], [0.9]],
+                "episode_index": [0, 0, 1], "task_index": [0, 0, 0],
+            }, features=Features({"image": Image(),
+                "action": Sequence(Value("float32")),
+                "episode_index": Value("int64"), "task_index": Value("int64")}))
+            dataset.to_parquet(str(root / "data/episode.parquet"))
+            source = LeRobotSource(data_path=str(root), action_key="action",
+                language_key="task", action_horizon=3, format_version_name="v2.1",
+                fps=None, tolerance_s=1e-4)
+            item = source[0]
+            np.testing.assert_allclose(item["action"], [[0.1], [0.2], [0.2]])
+            np.testing.assert_allclose(source[1]["action"], [[0.2]] * 3)
+            np.testing.assert_allclose(source[2]["action"], [[0.9]] * 3)
+            self.assertEqual(item["prompt"], "insert the peg in the hole")
+            np.testing.assert_array_equal(np.asarray(item["image"])[0, 0], [19, 23, 47])
+            self.assertEqual(source.dataset.action_dataset.column_names, ["action"])
+            self.assertEqual(source.detected_format_version, "v2.1")
+
+
 if __name__ == "__main__":
     unittest.main()
