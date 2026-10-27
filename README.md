@@ -54,6 +54,7 @@ Instead of coupling training loops, inference servers, and robot hardware to a s
 | **VLA** | Behavior Cloning (BC) | **Pi0** (`Pi0Model`, state/action each 1–32D) | Local / Accelerate / FSDP2, EMA, DCP | Offline, HTTP | — | **Implemented (`v1.0`, CPU contracts tested)** |
 | **VLA** | Long-Horizon Memory | **Pi0-Memory** (`Pi0MemoryModel`, 1–32D) | Frozen SigLIP feature store (`pi0.memory.prepare`) + BC loop | Per-session history (`MemorySession` / `pi0.memory.infer`) | — | **Implemented (`v1.0`, CPU contracts tested)** |
 | **VLA** | Offline RL / ACP | **Pi0-RECAP** (`Pi0ReCapModel`, 1–32D) | Offline Value (`Fusion`, separate `.pt` ckpt) + advantage labeling + ACP | Conditional policy Offline / HTTP | — | **Implemented (`v1.0`, CPU contracts tested)** |
+| **VLA** | Online RL | **Pi0.5 RLToken** | Token reconstruction, rollout, actor and twin critics | Frozen feature Artifact and actor | External environment adapter | [Implementation](docs/rltoken_implementation.md) · [Recipes](examples/configs/rltoken/) |
 | **WM** | Video Generation (T2V / I2V) | **Wan2.2** (proposed `TI2V-5B` first, then `I2V-A14B`) | Proposed flow matching, LoRA / dual-expert | Proposed offline generator, then async job server | — | **In Design** ([`docs/wm/`](docs/wm/README.md)) |
 | **WAM** | Action-Conditioned Dynamics & World-Action Unification | Embodied WM + Policy Direction | Proposed action-conditioned rollout (planner external) | Research direction beyond WM v1 | — | **Roadmap** |
 
@@ -169,6 +170,7 @@ dobot-nexus/
 │   ├── training/              # BCTrainer, Local/Accelerate/FSDP2 runtime, EMA, DCP resume, tracking
 │   ├── inference/             # InferencePolicy, PolicySession, HTTP/WS servers, security guards
 │   ├── algorithms/recap/      # Returns, advantages, offline Value training & dataset labeling
+│   ├── algorithms/rltoken/    # Token, actor/critic, replay and online training
 │   ├── modules/value/         # Reusable Fusion value networks, distributions & losses
 │   └── models/                # BaseVLAModule/BaseDataAdapter contract + isolated models (pi05/, pi0/)
 ├── data_processing/           # Dobot dual-arm 14D recorder PKL -> LeRobot v2.1 converter

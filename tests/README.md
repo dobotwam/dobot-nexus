@@ -18,12 +18,14 @@ tests/
 ├── entrypoints/                    # 环境脚本、训练/推理 launcher、真机样例 CLI
 │   └── atom/                       # ATOM 字段映射、相机生命周期、假设备执行与验证契约
 ├── algorithms/recap/              # Return、Advantage、标签、Value 作业与恢复
+├── algorithms/rltoken/             # Token、loss、Replay、Learner、同步、向量仿真/批量 Rollout、部署与协调
 ├── models/
 │   ├── pi0/                       # Pi0 模型与数据语义
 │   └── pi05/                       # core、数据、训练、Torch 引擎、部署、Memory
 │       ├── test_action_boundary.py # 维度约束、投影扩展、内部维度恢复、训推数据边界
 │       ├── test_recap.py           # Pi0.5 条件策略、Artifact 和推理
-│       └── test_recap_config.py    # RECAP 策略配置与依赖约束
+│       ├── test_recap_config.py    # RECAP 策略配置与依赖约束
+│       └── rltoken/                # Stage 1 单 forward、梯度、动作 codec 与特征导出
 ├── modules/value/                  # Value 网络、损失、预处理与依赖隔离
 └── fakes.py                        # 公共 CPU 小模型；算法和模型 fixture 随各自测试目录
 ```
