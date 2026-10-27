@@ -159,6 +159,11 @@ class LeRobotNormStatsTest(unittest.TestCase):
                 }
             )
             model_config = mock.Mock(
+                camera_mapping={
+                    "base": "base_0_rgb",
+                    "left_wrist": "left_wrist_0_rgb",
+                    "right_wrist": "right_wrist_0_rgb",
+                },
                 max_token_len=8,
                 state_dim=2,
                 action_dim=2,

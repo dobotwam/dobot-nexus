@@ -74,6 +74,19 @@ class CameraRoutingTest(unittest.TestCase):
             np.testing.assert_array_equal(training[slot], frame[f"observation.images.{wire}"])
             np.testing.assert_array_equal(serving[slot][0], training[slot])
 
+    def test_partial_artifact_routes_only_active_cameras_and_advertises_them(self):
+        self.policy.model.pi05_config.camera_mapping = {"hand": "left_wrist_0_rgb"}
+        self.policy.spec = replace(self.policy.spec, camera_names=("hand",))
+        self.policy.config["data"]["field_mapping"]["images"] = {"left_wrist": "images.head"}
+        adapter = server.NexusOpenPiPolicy(self.policy)
+        meta = server.build_openpi_metadata(self.policy)
+        self.assertEqual(set(meta["input_schema"]["images"]), {"top_camera"})
+        top = self.observation["images"]["top_camera"]
+        adapter.infer({**self.observation, "images": {"top_camera": top}})
+        images = self.policy.calls[-1][0]["images"]
+        self.assertEqual(set(images), {"hand"})
+        np.testing.assert_array_equal(images["hand"], top.transpose(1, 2, 0))
+
     def test_ambiguous_dataset_columns_require_an_override_with_permuted_slots(self):
         for column in ("custom", self.columns["right_wrist"]):
             with patch.dict(self.columns, base=column):

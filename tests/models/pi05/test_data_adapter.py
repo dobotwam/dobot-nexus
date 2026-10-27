@@ -78,6 +78,35 @@ class Pi05DataAdapterTest(unittest.TestCase):
 
 
 class NormalizationTest(unittest.TestCase):
+    def test_two_camera_training_and_runtime_use_the_same_missing_view_mask(self):
+        from dobot_nexus.core.contracts import ObservationBatch
+
+        with tempfile.TemporaryDirectory() as root:
+            original = self.pipeline(root)
+            config = clone_config(original.root_config)
+            config.data.field_mapping.images = {"base": "base", "left_wrist": "hand"}
+            model = SimpleNamespace(**vars(original.model_config))
+            model.camera_mapping = {"base": "base_0_rgb", "hand": "left_wrist_0_rgb"}
+            pipeline = Pi05Pipeline(config, model)
+            pipeline.tokenize_prompt = lambda *args: (np.array([1]), np.array([True]))
+            base, hand = np.full((224, 224, 3), 42, np.uint8), np.full((224, 224, 3), 84, np.uint8)
+            state = np.array([0, 1], np.float32)
+            training = pipeline.transform_frame({
+                "base": base, "hand": hand, "observation.state": state,
+                "action": np.zeros((3, 2), np.float32), "task": "insert",
+            })
+            runtime, _ = pipeline.transform_runtime_numpy(ObservationBatch(
+                {"base": base[None], "hand": hand[None]}, state[None], ["insert"]
+            ))
+            for key in training["image"]:
+                np.testing.assert_array_equal(training["image"][key], runtime["image"][key][0])
+                self.assertEqual(training["image_mask"][key], runtime["image_mask"][key][0])
+            self.assertFalse(training["image_mask"]["right_wrist_0_rgb"])
+            self.assertFalse(training["image"]["right_wrist_0_rgb"].any())
+            model.camera_mapping["extra"] = "right_wrist_0_rgb"
+            with self.assertRaisesRegex(ValueError, "same slots"):
+                Pi05Pipeline(config, model)
+
     def test_prefetch_configuration_respects_worker_mode(self):
         with tempfile.TemporaryDirectory() as root:
             pipeline = self.pipeline(root)

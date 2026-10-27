@@ -226,9 +226,10 @@ def _field_mapping(config: Any) -> tuple[dict[str, str], str, str, str | None]:
     mapping = config.get("data", {}).get("field_mapping", {})
     raw_images = dict(mapping.get("images", {}))
     images = dataset_image_fields(raw_images)
-    if set(images) != set(CORE_IMAGE_KEYS):
+    if not images or not set(images).issubset(CORE_IMAGE_KEYS) or len(images) != len(raw_images):
         raise ValueError(
-            "data.field_mapping.images must map base, left_wrist, and right_wrist; "
+            "data.field_mapping.images must map a nonempty subset of base, left_wrist, "
+            "and right_wrist without duplicate slots; "
             f"got {sorted(raw_images)}."
         )
     state = str(mapping.get("state", "observation.state"))
@@ -277,6 +278,9 @@ class Pi05Pipeline:
         self.image_fields, self.state_key, self.action_key, self.language_key = _field_mapping(
             root_config
         )
+        camera_mapping = getattr(model_config, "camera_mapping", None)
+        if camera_mapping is not None and set(self.image_fields) != set(camera_mapping.values()):
+            raise ValueError("Training image fields and model.io.cameras must use the same slots.")
         self.action_transform = _action_transform(root_config, model_config.action_dim)
         self.delta_mask = self.action_transform.delta_mask
         task = str(root_config.get("task", "")).lower()
@@ -382,10 +386,11 @@ class Pi05Pipeline:
         tokens, token_mask = self.tokenize_prompt(self._prompt(frame), normalized_state)
         return {
             "image": {
-                destination: _resize_with_pad(_convert_image(frame[source]))
-                for destination, source in self.image_fields.items()
+                slot: (_resize_with_pad(_convert_image(frame[self.image_fields[slot]]))
+                       if slot in self.image_fields else np.zeros((224, 224, 3), np.uint8))
+                for slot in CORE_IMAGE_KEYS
             },
-            "image_mask": dict.fromkeys(CORE_IMAGE_KEYS, np.True_),
+            "image_mask": {slot: np.bool_(slot in self.image_fields) for slot in CORE_IMAGE_KEYS},
             "state": _pad_last_dim(normalized_state, self.model_config.model_action_dim),
             "actions": _pad_last_dim(normalized_actions, self.model_config.model_action_dim),
             "tokenized_prompt": tokens,
@@ -411,13 +416,18 @@ class Pi05Pipeline:
                     _resize_with_pad(_convert_image(observation.images[public_name][batch_index]))
                 )
         batch_size = observation.batch_size
+        active_slots = set(self.model_config.camera_mapping.values())
         return (
             {
                 "image": {
-                    key: np.ascontiguousarray(np.stack(value), dtype=np.uint8)
+                    key: (np.ascontiguousarray(np.stack(value), dtype=np.uint8)
+                          if value else np.zeros((batch_size, 224, 224, 3), np.uint8))
                     for key, value in images.items()
                 },
-                "image_mask": {key: np.ones(batch_size, dtype=np.bool_) for key in CORE_IMAGE_KEYS},
+                "image_mask": {
+                    key: np.full(batch_size, key in active_slots, dtype=np.bool_)
+                    for key in CORE_IMAGE_KEYS
+                },
                 "state": np.ascontiguousarray(
                     _pad_last_dim(normalized_state, self.model_config.model_action_dim),
                     dtype=np.float32,

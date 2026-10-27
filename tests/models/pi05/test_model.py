@@ -201,6 +201,17 @@ class Pi05DirectCoreTest(unittest.TestCase):
         self.assertNotIn("jax_export_base_checkpoint", config.model)
         self.assertFalse(hasattr(parsed, "jax_export_base_checkpoint"))
 
+    def test_camera_mapping_allows_unique_subsets_of_core_slots(self) -> None:
+        config = load_config(ROOT / "examples/configs/train/pi05.yaml", expected_task="train")
+        config.model.io = Config({"cameras": {"base": "base_0_rgb", "hand": "left_wrist_0_rgb"}})
+        parsed = Pi05Config.from_config(config, mode="train")
+        self.assertEqual(parsed.camera_names, ("base", "hand"))
+        for cameras in ({}, {"base": "invalid"}, {"a": "base_0_rgb", "b": "base_0_rgb"}):
+            with self.subTest(cameras=cameras):
+                config.model.io.cameras = cameras
+                with self.assertRaises(ValueError):
+                    Pi05Config.from_config(config, mode="train")
+
     def test_production_rejects_reference_backends_before_loading_weights(self) -> None:
         for mode in ("train", "infer"):
             for backend in ("jax", "tensorflow"):

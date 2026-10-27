@@ -314,8 +314,10 @@ class Pi05Config:
             raise ValueError("Pi0.5 model.inference_backend must be 'torch'.")
         if self.image_size != (224, 224):
             raise ValueError("The aligned Pi0.5 operator requires model.image_size=[224, 224].")
-        if set(self.camera_mapping.values()) != set(_DEFAULT_CAMERAS.values()):
+        slots = tuple(self.camera_mapping.values())
+        if (not slots or len(set(slots)) != len(slots)
+                or not set(slots).issubset(_DEFAULT_CAMERAS.values())):
             raise ValueError(
-                "Pi0.5 cameras must populate base_0_rgb, left_wrist_0_rgb, and "
-                "right_wrist_0_rgb exactly once."
+                "Pi0.5 cameras must map a nonempty subset of base_0_rgb, "
+                "left_wrist_0_rgb, and right_wrist_0_rgb without duplicate slots."
             )
