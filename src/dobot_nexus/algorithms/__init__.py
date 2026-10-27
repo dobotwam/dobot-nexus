@@ -1,1 +1,1 @@
-"""Algorithm-owned computation and workflows."""
+"""Algorithm-owned computation and workflows with explicitly loaded backends."""
