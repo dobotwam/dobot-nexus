@@ -137,6 +137,7 @@ def validate_config(config: Mapping[str, Any], expected_task: str | None = None)
         raise ValueError(f"task must be 'train' or 'infer', got {task!r}.")
     if expected_task is not None and task != expected_task:
         raise ValueError(f"Expected task={expected_task!r}, got {task!r}.")
+    algorithm_target(config)
     model = config.get("model")
     if not isinstance(model, Mapping):
         raise ValueError("model must be a mapping.")
@@ -167,6 +168,21 @@ def validate_config(config: Mapping[str, Any], expected_task: str | None = None)
             raise ValueError("train.resume_from must be null, 'auto', or a checkpoint path.")
     if task == "infer" and not model.get("artifact") and not model.get("checkpoint"):
         raise ValueError("Inference requires model.artifact or model.checkpoint.")
+
+
+def algorithm_target(config: Mapping[str, Any]) -> str | None:
+    """Resolve trainer selection without importing training dependencies."""
+    algorithm = config.get("algorithm", "bc")
+    if isinstance(algorithm, str) and algorithm == "bc":
+        return None
+    if not isinstance(algorithm, Mapping):
+        raise ValueError("algorithm must be 'bc' or a mapping containing target.")
+    target = algorithm.get("target")
+    if not isinstance(target, str) or not re.fullmatch(
+        r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*", target
+    ):
+        raise ValueError("algorithm.target must use module:object.")
+    return target
 
 
 def _merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:

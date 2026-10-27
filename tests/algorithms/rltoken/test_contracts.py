@@ -1,9 +1,12 @@
 import unittest
+from pathlib import Path
 
 import torch
 
-from dobot_nexus.core.config import Config
+from dobot_nexus.cli.train import trainer_class
+from dobot_nexus.core.config import Config, algorithm_target, load_config
 from dobot_nexus.core.contracts import EncodedActionBatch, SamplingOptions
+from dobot_nexus.training import BCTrainer
 from tests.fakes import DummyVLAModule
 
 from .fakes import feature_spec, features
@@ -27,6 +30,30 @@ class ContractsTest(unittest.TestCase):
             packet.validate(spec)
         with self.assertRaisesRegex(ValueError, "index"):
             row.row(1)
+
+    def test_existing_bc_and_target_selection(self):
+        root = Path(__file__).resolve().parents[3]
+        for name in ("pi0", "pi05", "pi0_memory", "pi0_recap"):
+            self.assertIs(
+                trainer_class(load_config(root / f"examples/configs/train/{name}.yaml")), BCTrainer
+            )
+        self.assertIs(trainer_class({}), BCTrainer)
+        self.assertIs(
+            trainer_class({"algorithm": {"target": "tests.fakes:DummyVLAModule"}}), DummyVLAModule
+        )
+
+    def test_invalid_selector_and_duplicate_driver(self):
+        for value in (
+            None,
+            "rlt",
+            {},
+            {"target": "a"},
+            {"target": "a:b:c"},
+            {"target": " a:b"},
+            [],
+        ):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                algorithm_target({"algorithm": value})
 
     def test_optional_capabilities_preserve_existing_models(self):
         model = DummyVLAModule(Config({"model": Config({})}), mode="train")
