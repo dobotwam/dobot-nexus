@@ -1,0 +1,50 @@
+extends: stage2.yaml
+exp:
+  name: rltoken_dobot_td3
+algorithm:
+  recipe: rlt_td3_dual_residual_v1
+  task_identity: sparse_terminal_success_v1
+  policy_switch:
+    task_mode: full_task
+    execution_scope: critical_phase
+    training_scope: critical_phase
+  initialize_from: ${env:RLT_STAGE_ARTIFACT,/path/to/offline-joint/rltoken/best.pt}
+  learning:
+    critic_actor_ratio: 2
+    bc_weight: 100.0
+    warmup: 256
+    updates_per_new_transition: 5
+    td3:
+      discount_unit: chunk
+      target_noise: 0.02
+      target_noise_clip: 0.05
+      target_bounds: [0.0, 1.0]
+      td_action_view: project
+      q_normalization: gradient
+      grad_clip: 1.0
+      residual_l2: 0.0
+      direction_weight: 0.0
+      rank_weight: 0.0
+model:
+  action_horizon: 6
+  rltoken:
+    chunk_size: 6
+    residual:
+      # Example for the inherited 14-axis task: choose scales in YOUR provider codec.
+      rho: [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05]
+      actor_width: 128
+      critic_width: 256
+      residual_limit: 0.2
+      exploration_std: 0.0
+      exploration_mode: step
+data:
+  offline_cache: ${env:RLT_CACHE,/path/to/cache}
+  replay:
+    sampling: demo_joint_50
+    demo_capacity: 100000
+    demo_max_bytes: 1073741824
+environment:
+  reward_mode: episode
+  update_schedule: episode_end
+  drain_on_stop: true
+  deterministic: false

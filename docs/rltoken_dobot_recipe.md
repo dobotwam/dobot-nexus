@@ -1,5 +1,10 @@
 # RLToken 双残差配方
 
+`rlt_td3_dual_residual_v1` 提供冻结 VLA 特征、残差 Actor、严格冻结 Base 的双残差
+Critic，以及四个离线训练阶段和在线 TD3。算法计算在 `algorithms/rltoken/`，
+Pi0.5 prefix 选择和动作 codec 在 `models/pi05/rltoken/`。离线入口无需 RLinf/Ray；
+在线调度仍由已有三角色执行适配负责。参考文件摘要见算法目录 `NOTICE.md`。
+
 ## 算法与数据
 
 Actor 使用 Context MLP + LSTM，输出 `reference + rho*tanh(head)`，动作头零初始化。
@@ -34,10 +39,15 @@ Replay 保存原始 reference、实际执行动作、监督动作及其 mask。`
 只有新在线记录第一次定稿准入才增加 UTD。报告 `online_admitted`、`target_utd`、
 `actual_utd`、`sample_demo_fraction` 和 TD 投影比例。
 
-## Token 预训练
+## 运行顺序
+
+使用普通 Python 单进程启动三个离线入口。先配置 provider 的 checkpoint、统计资产、
+相机映射、controller codec，以及数据路径和完整 episode 划分。
 
 ```bash
 PYTHONPATH=src:. python -m dobot_nexus.cli.train --config examples/configs/rltoken/dobot_token.yaml
+PYTHONPATH=src:. python -m dobot_nexus.cli.train --config examples/configs/rltoken/dobot_cache.yaml
+PYTHONPATH=src:. python -m dobot_nexus.cli.train --config examples/configs/rltoken/dobot_pretrain.yaml
 ```
 
 Token 使用 `training_mode=token_only`、`mode=bottleneck`、`selection=image_only`。
@@ -63,8 +73,6 @@ Token 数据默认使用模型的 `build_train_dataloader`。任务拥有其他�
 loader 需返回可索引 dataset 和 collate_fn，并遵守传入的 `data.episode_ids` 划分。
 图像、状态、动作与语言预处理仍应使用模型的数据适配器；任务读取工具放在实验目录。
 
-## 离线缓存与阶段训练
-
 缓存入口可通过 `data.episode_reader=module:function` 读取 `offline_data.Episode`。
 每个 Episode 提供 T 个控制器实际命令、T 个奖励和 takeover，以及 T+1 个实际观测。可单独提供监督动作/mask；时间戳存在时校验控制周期。
 最后一个观测属于同一 episode，不能使用 reset 观测。缓存按各来源的完整 episode
@@ -88,7 +96,7 @@ loader 需返回可索引 dataset 和 collate_fn，并遵守传入的 `data.epis
 不作为纯 VLA MC。失败示范默认只有接管位置可作 BC 监督；额外专家标签通过显式 mask 声明。缓存记录数据版本、奖励身份、折扣、chunk/stride、采样步数、seed、
 特征/codec 身份、episode 划分及完整内容摘要。更新 Token 后必须重建缓存。
 
-离线阶段通过 `algorithm.target=dobot_nexus.algorithms.rltoken.pretraining:RLTokenPretrainTrainer` 选择训练入口，每个阶段使用独立输出目录。
+离线阶段使用同一个 `dobot_pretrain.yaml`，分别运行到不同目录：
 
 | 阶段 `algorithm.pretrain.phase` | 初始化 `algorithm.pretrain.initialize` | 可更新参数 |
 |---|---|---|
@@ -113,9 +121,16 @@ Critic/joint 的选点指标为验证 Critic loss，**不是任务成功率**；
 后续实验，不代表任务效果已验收。非有限验证 loss 始终报错。默认策略
 `loss_threshold` 保留显式阈值准入。最终收益必须由独立任务评测确定。
 
+## 在线与部署
+
+`dobot_td3.yaml` 从 `algorithm.initialize_from` 加载通过准入的阶段产物，启动新在线
+会话，在线更新数和预算从零开始，target 从所加载权重初始化。预训练 Actor 在对应
+版本收到 applied ACK 后可启用；无需再累计固定在线更新数。公开 Artifact 只部署
+Actor 与冻结 provider，算法恢复格式为 `rltoken_td3_resume_v2`。
+
 ### 执行阶段与训练范围
 
-算法配置通过 `policy_switch` 选择执行和训练范围。
+`dobot_td3.yaml`（及继承它的缓存、离线预训练配置）显式选择：
 
 ```yaml
 algorithm:
@@ -163,3 +178,45 @@ episode 重置。使用 `latch_until_done` 的任务必须在适配器内只清�
 使用原始 VLA reference，不叠加 Actor 修正或 target smoothing；真实终止语义不变。
 单环境、向量采集和部署共用 `routing.py`；非 Actor 行不消耗 Actor 探索噪声。
 部署 Artifact 保留同一份配置，调用方继续提供阶段信号；部署模型视为已就绪。
+
+LeRobot 缓存的 `data.policy_switch_key` 指定 bool 阶段列，示例为 `rlt_switch_flags`，
+包括最后观测帧。自定义 Episode reader 在观测的 `control` 中提供同一信号。
+缓存按 chunk 起点筛选，再按 episode 隔离训练/验证，MC return 仍从实际奖励计算。
+缓存、Replay、恢复 fingerprint 和离线阶段产物校验数据范围；阶段配置不同的缓存
+不能直接导入，需按目标范围重建。仅含关键阶段的已裁剪数据可显式配置
+`task_mode=critical_phase`，并在缓存、离线训练、在线和部署中保持一致。
+
+环境配置 `reward_mode=episode` 时，adapter 提供：
+
+```python
+finalize_episode(env_id=..., episode_id=..., pending=tuple_of_transitions, timeout=...)
+# 返回 iterable[Finalization(key, rewards, accepted, episode_success=None)]，也可以暂时返回 None。
+poll_finalizations(pending=tuple_of_transitions, timeout=...)
+# 可选：后续审核或重启后补交标签。
+```
+
+标签只允许补充奖励、episode 成败标签和审核结论。Learner 从 journal 取出原记录，校验身份、执行事实
+和奖励形状，持久化后 ACK；重复定稿不重复计预算，冲突和未知记录被拒绝。
+失败回合可 `accepted=True`，pending/拒绝记录不训练。重启将 pending 记录交还环境
+adapter；环境 adapter 负责真实任务阶段和执行状态的协调。
+
+`update_schedule=episode_end` 在回合结束后集中消耗预算；向量采集以一次完整反馈批次
+为边界。`drain_on_stop=true` 达到采集上限后继续消费预算，直到更新上限、预算耗尽或
+有效 Replay 不足 warmup。checkpoint 保存 Learner target/optimizer/噪声 RNG 和 rollout
+探索 RNG。环境恢复会建立新执行 session，不声称能逐位重放真实机器人状态。
+
+```bash
+examples/train.sh --config examples/configs/rltoken/dobot_td3.yaml --gpus 0,1
+```
+
+GPU 编号和环境 adapter 由实际资源安排决定。该示例不是自动启动真机的指令。
+
+## 验证边界
+
+CPU 测试覆盖新旧配方隔离、执行事实与监督隔离、Base 冻结、阶段优化器、延迟 targets、
+缓存 episode 隔离、在线预算去重、完整恢复后的下一次更新、Token-only 冻结和部署资产。
+数值对照和诊断脚本保留在 Git 忽略的 `local_script/rltoken_alignment/`，不进入生产依赖。
+
+任务验收仍需依次比较 reference 透传、小 Actor BC、固定 Actor 训练 Critic、短程 joint、
+在线微调；固定场景和 reference seed，报告配对成败、动作偏离、Q 排序和实际 UTD。
+本实现不把模块测试或参考项目尚未填写的实验 18 真机结果当作任务收益证明。

@@ -1,0 +1,32 @@
+extends: dobot_td3.yaml
+exp:
+  name: rltoken_frozen_cache
+algorithm:
+  target: dobot_nexus.algorithms.rltoken.pretraining:RLTokenCacheTrainer
+  initialize_from: null
+runtime:
+  launcher: local
+  device: cpu
+data:
+  episode_reader: dobot_nexus.algorithms.rltoken.lerobot_offline:read_episodes
+  path: ${env:RLT_DATASET,/path/to/lerobot}
+  action_key: action
+  state_key: observation.state
+  # Boolean per-frame phase state, including the final observation.
+  policy_switch_key: rlt_switch_flags
+  images:
+    base: observation.images.base
+    left_wrist: observation.images.left_wrist
+    right_wrist: observation.images.right_wrist
+  episode_labels: ${env:RLT_EPISODE_LABELS,/path/to/episode_labels.json}
+  last_frame_is_final_observation: true
+  require_token_acceptance: true
+  cache:
+    chunk_size: 6
+    stride: 2
+    dataset_version: robot_dataset_v1
+    reward_definition: sparse_terminal_success_v1
+    # 0.99 ** (1 / 6), consistent with the chunk discount in dobot_td3.yaml.
+    gamma_step: 0.9983263461476896
+    seed: 42
+    validation_fraction: 0.2

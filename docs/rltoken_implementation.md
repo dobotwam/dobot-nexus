@@ -1,5 +1,9 @@
 # RLToken 开发与模块验证
 
+双残差 TD3、Token-only、离线缓存/分阶段预训练和回合定稿的当前入口，见
+[双残差配方](rltoken_dobot_recipe.md)。下文的 `rlt_ac_fixed_v1` / `rlt_ac_terminal_v2`
+按各自显式配置使用；不同 recipe 的恢复状态不可互换。
+
 当前实现的职责划分：`algorithms/rltoken/`
 管理模型无关的算法和训练状态，`models/pi05/rltoken/` 提供首个特征模型，RLinf 管理
 远程执行。真机使用单环境；仿真支持一个向量环境和批量 Rollout 推理。两个模型 GPU
@@ -138,7 +142,12 @@ examples/train.sh --config examples/configs/rltoken/stage2.yaml --gpus 0,1
 拒绝继承 BC 的 FSDP、EMA、梯度累积和公共 optimizer/scheduler 配置。
 
 数据满足 warmup、Actor 更新达到 `environment.min_actor_updates` 且对应版本已应用
-后，才从 reference 路由切换到 Actor。GPU 空闲不会增加 UTD。每个唯一、最终准入的
+后，Actor 才具备执行资格；已验收的离线初始化可在对应版本 applied ACK 后就绪。
+`algorithm.policy_switch.execution_scope` 控制执行范围，`training_scope` 控制训练范围，
+均支持 `all` 与 `critical_phase`，默认 `all`。启用全任务关键阶段控制时，环境观测须
+携带 `control.rlt_switch_flags: bool[B]`；就绪与阶段门控独立，关键阶段的 VLA 预热数据
+仍可入库。完整配置、适配器职责和边界语义见[双残差配方](rltoken_dobot_recipe.md#执行阶段与训练范围)。
+GPU 空闲不会增加 UTD。每个唯一、最终准入的
 transition 增加整数更新预算；成功 critic 更新扣除预算。默认 `rlt_ac_fixed_v1`
 拒绝未完整执行的块；`rlt_ac_terminal_v2` 的终止前缀规则见下文“仿真批量采集”。
 执行状态未知、缺 reward 或动作不可编码时保留记录但不训练。
@@ -165,7 +174,7 @@ class RobotAgent:
 
 执行入口支持 `reward_mode=per_step` 和 `episode`。回合模式先持久化 pending，再由
 适配器的 `finalize_episode` / 可选 `poll_finalizations` 返回最终标签；不能先训练临时
-reward 再覆盖。具体控制器和仿真 SDK 适配保留在环境包，本仓库不自造
+reward 再覆盖。阶段范围排除的记录不进入 pending。具体控制器和仿真 SDK 适配保留在环境包，本仓库不自造
 硬件端点或导入本地调试脚本。
 
 ## 保存、恢复和部署

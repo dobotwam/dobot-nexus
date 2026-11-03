@@ -20,7 +20,7 @@ from .batching import environment_batch_size
 from .checkpoint import load_resume, save_resume
 from .configuration import LearningConfig
 from .env import EnvSession
-from .learner import Learner
+from .learner import create_learner
 from .policy import RLTokenPolicy
 from .replay import Replay
 from .rollout import RolloutEngine
@@ -132,6 +132,8 @@ class RolloutWorker(Worker):
             learner_epoch=self.epoch,
             seed=int(self.config.exp.get("seed", 0)),
             max_batch_size=environment_batch_size(self.config.environment),
+            reference_num_steps=self.config.algorithm.get("reference_num_steps",
+                10 if self.config.algorithm.get("recipe") == "rlt_td3_dual_residual_v1" else None),
         )
         return True
 
@@ -155,6 +157,14 @@ class RolloutWorker(Worker):
         applied = self.engine.weights.apply(snapshot)
         _put(self.channels["weight_acks"], applied, self.max_bytes)
         return applied.actor_update
+
+    def rng_state(self):
+        return self.engine.generator.get_state().cpu()
+
+    def restore_rng(self, state):
+        if state is not None:
+            self.engine.generator.set_state(state.cpu())
+        return True
 
     def export_deployment(self, path):
         with self.engine.weights.request() as (actor, version):
@@ -212,9 +222,9 @@ class LearnerWorker(Worker):
             seed=learning.seed,
             task_fingerprint=self.task_fingerprint,
             training_scope=PolicySwitch.from_config(self.config).training_scope,
-            allow_terminal_chunks=self.config.algorithm.get("recipe") == "rlt_ac_terminal_v2",
+            allow_terminal_chunks=self.config.algorithm.get("recipe") in {"rlt_ac_terminal_v2", "rlt_td3_dual_residual_v1"},
         )
-        self.learner = Learner(
+        self.learner = create_learner(
             policy.feature_spec, policy.head_config, learning, replay, device=device, policy=policy
         )
         if self.resume_path:
@@ -223,6 +233,20 @@ class LearnerWorker(Worker):
             )
             if restored_run != self.run_id:
                 raise ValueError("Resume run identity mismatch.")
+        elif self.config.algorithm.get("initialize_from"):
+            from .pretraining import initialize_from_stage
+            initialize_from_stage(self.learner, self.config.algorithm.initialize_from,
+                                  task_identity=self.config.algorithm.task_identity)
+        if self.config.data.get("offline_cache") and not self.resume_path:
+            from .offline_data import load_cache
+            cache = load_cache(self.config.data.offline_cache, policy.feature_spec,
+                               chunk_size=policy.head_config.chunk_size,
+                               reward_definition=self.config.algorithm.task_identity,
+                               gamma_step=self.learner.gamma_step,
+                               reference_num_steps=self.config.algorithm.get("reference_num_steps", 10),
+                               policy_switch=self.config.algorithm.get("policy_switch", {}))
+            for row in cache["train"]:
+                replay.commit(row)
         return self.learner.update(0)
 
     def update(self, max_updates=1):
@@ -250,7 +274,7 @@ class LearnerWorker(Worker):
 
     def sync_model_to_rollout(self):
         self.learner.barrier()
-        version = ActorVersion(self.run_id, self.epoch, self.learner.actor_updates)
+        version = ActorVersion(self.run_id, self.epoch, getattr(self.learner, "actor_revision", self.learner.actor_updates))
         snapshot = ActorSnapshot.capture(self.learner.actor, version, self.learner.spec.feature_id)
         _put(self.channels["weights"], snapshot, self.max_bytes)
         applied = _receive(self.channels["weight_acks"], self.timeout)
@@ -258,7 +282,12 @@ class LearnerWorker(Worker):
             raise ValueError("Actor applied ACK version mismatch.")
         return applied.actor_update
 
-    def snapshot(self):
+    def rollout_rng(self):
+        return getattr(self.learner, "rollout_rng", None)
+
+    def snapshot(self, rollout_rng=None):
+        if rollout_rng is not None:
+            self.learner.rollout_rng = rollout_rng
         path = save_resume(
             Path(self.config.exp.run_dir) / "rltoken/checkpoints",
             self.learner,

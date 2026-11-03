@@ -28,7 +28,7 @@ class Decision:
 class RolloutEngine:
     """Bounded environment caches and one complete Actor version per inference batch."""
 
-    def __init__(self, policy, *, run_id, learner_epoch, seed=0, max_batch_size=1, policy_switch=None):
+    def __init__(self, policy, *, run_id, learner_epoch, seed=0, max_batch_size=1, reference_num_steps=None, policy_switch=None):
         if type(max_batch_size) is not int or max_batch_size <= 0:
             raise ValueError("max_batch_size must be a positive integer.")
         if policy.mode != "infer":
@@ -38,6 +38,7 @@ class RolloutEngine:
             policy.actor, policy.feature_spec.feature_id, run_id, learner_epoch
         )
         self.max_batch_size = max_batch_size
+        self.reference_num_steps = reference_num_steps
         self.policy_switch = (PolicySwitch(**policy_switch) if policy_switch is not None else
                               PolicySwitch.from_config(getattr(policy, "config", {})))
         self.environments = {}
@@ -112,7 +113,7 @@ class RolloutEngine:
             )
             seed = sampling_seed(self.seed + offset, "reference")
             batch = (
-                self.policy.provider.extract_rl_features(observations, SamplingOptions(seed=seed))
+                self.policy.provider.extract_rl_features(observations, SamplingOptions(seed=seed, num_steps=self.reference_num_steps))
                 .cpu_copy()
                 .validate(self.policy.feature_spec, chunk_size=self.policy.head_config.chunk_size)
             )

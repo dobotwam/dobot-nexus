@@ -172,6 +172,58 @@ class TrainingTest(unittest.TestCase):
         self.assertEqual(result.checkpoint, "checkpoint-3")
         self.assertEqual(result.metrics["deployment_ready"], 0)
 
+    def test_pretrained_actor_starts_immediately_and_drains_episode_budget(self):
+        class Execution(CoordinatorFixture):
+            def __init__(self):
+                super().__init__()
+                self.budget = 0
+                self.ready = []
+                self.update_chunks = []
+                self.applied_actor_update = 1
+                self.rollout.rng_state = lambda: Handle(None)
+            def status(self, updates=0):
+                return dict(updates=updates, critic_updates=self.step, actor_updates=self.step//2,
+                    actor_revision=1+self.step//2, ready_revision=1, pretrained_ready=True,
+                    admitted=2+self.chunks, replay_size=2+self.chunks, budget=self.budget, metrics={})
+            def start(self):
+                return self.status()
+            def collect(self, actor_ready=False):
+                self.ready.append(actor_ready)
+                self.chunks += 1
+                if self.chunks == 2:
+                    self.budget += 4
+                return Handle(dict(chunks=self.chunks, env_steps=self.chunks*2, faulted=False,
+                                   episode_ended=self.chunks == 2))
+            def update(self, max_updates):
+                count = min(max_updates, self.budget)
+                if count:
+                    self.update_chunks.append(self.chunks)
+                self.step += count
+                self.budget -= count
+                return Handle(self.status(count))
+            def update_rollout_weights(self, no_wait=False):
+                self.applied_actor_update = 1+self.step//2
+            def snapshot(self, **kwargs):
+                return super().snapshot()
+        trainer = RLTokenTrainer.__new__(RLTokenTrainer)
+        trainer.config = self.config()
+        trainer.config.train.max_steps = 10
+        trainer.config.train.save_every = 10
+        trainer.config.environment.max_chunks = 2
+        trainer.config.environment.update_schedule = "episode_end"
+        trainer.config.environment.drain_on_stop = True
+        trainer.learning = LearningConfig(warmup=1, critic_actor_ratio=2, td3={})
+        with tempfile.TemporaryDirectory() as directory:
+            trainer.experiment = SimpleNamespace(run_dir=Path(directory), logger=logging.getLogger("test"))
+            execution = Execution()
+            result = trainer._coordinate(execution)
+        self.assertEqual(result.global_step, 4)
+        self.assertEqual(execution.ready, [True, True])
+        self.assertEqual(execution.update_chunks, [2]*4)
+        self.assertEqual(execution.chunks, 2)
+        self.assertEqual(result.metrics["budget"], 0)
+        self.assertEqual(result.metrics["deployment_ready"], 1)
+
     def test_import_boundaries_are_lazy_and_algorithms_do_not_import_models(self):
         for path in (ROOT / "src/dobot_nexus/algorithms/rltoken").glob("*.py"):
             for node in ast.walk(ast.parse(path.read_text())):

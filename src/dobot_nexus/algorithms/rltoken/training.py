@@ -13,7 +13,7 @@ from dobot_nexus.core.contracts import TrainResult
 
 from .artifacts import feature_metadata
 from .batching import environment_batch_size
-from .configuration import HeadConfig, LearningConfig, recipe_identity
+from .configuration import HeadConfig, LearningConfig, recipe_identity, validate_recipe
 from .identity import content_digest
 from .routing import PolicySwitch
 
@@ -41,7 +41,17 @@ def validate_training(config):
         )
     heads = HeadConfig(**config.model.rltoken)
     learning = LearningConfig(**config.algorithm.learning)
-    recipe_identity(config.algorithm.get("recipe", "rlt_ac_fixed_v1"))
+    validate_recipe(config.algorithm.get("recipe", "rlt_ac_fixed_v1"), heads, learning)
+    if config.algorithm.get("initialize_from") and train.get("resume_from"):
+        raise ValueError("initialize_from starts a new run; resume_from restores an existing run.")
+    if config.algorithm.get("initialize_from") and (learning.td3 is None or not config.algorithm.get("task_identity")):
+        raise ValueError("Stage initialization requires the TD3 recipe and task_identity.")
+    if heads.residual is not None and len(heads.residual["rho"]) != config.model.action_dim:
+        raise ValueError("Residual rho must declare one scale per model action dimension.")
+    if learning.td3 is not None and not config.algorithm.get("task_identity"):
+        raise ValueError("TD3 requires a versioned task_identity for reward semantics.")
+    if type(config.algorithm.get("reference_num_steps", 10)) is not int or config.algorithm.get("reference_num_steps", 10) <= 0:
+        raise ValueError("reference_num_steps must be a positive integer.")
     if heads.chunk_size != config.model.action_horizon:
         raise ValueError("Public action_horizon must equal fixed chunk_size.")
     for name in ("max_steps", "save_every"):
@@ -60,6 +70,8 @@ def validate_training(config):
     for name in ("max_chunks", "min_actor_updates"):
         if type(env.get(name)) is not int or env[name] <= 0:
             raise ValueError(f"environment.{name} must be a positive integer.")
+    if env.get("update_schedule", "continuous") not in {"continuous", "episode_end"}:
+        raise ValueError("update_schedule must be continuous or episode_end.")
     timeout = env.get("timeout", 0)
     rpc_timeout = runtime.get("rpc_timeout", 120)
     if (
@@ -106,6 +118,9 @@ class RLTokenTrainer:
         self.task_fingerprint = content_digest(
             {
                 **PolicySwitch.from_config(config).identity(),
+                **({"task_identity": config.algorithm.get("task_identity"),
+                    "reference_num_steps": config.algorithm.get("reference_num_steps", 10)}
+                   if self.learning.td3 is not None else {}),
                 "feature_spec": spec,
                 "heads": self.heads,
                 "learning": self.learning,
@@ -173,6 +188,10 @@ class RLTokenTrainer:
         deployed = False
         last_log = time.monotonic()
         pause = status["critic_updates"] >= config.train.max_steps
+        episode_updates = config.environment.get("update_schedule", "continuous") == "episode_end"
+        draining_episode = False
+        episode_status_pending = False
+        drain_on_stop = config.environment.get("drain_on_stop", False)
 
         def launch(name, handle):
             if name in handles:
@@ -190,23 +209,31 @@ class RLTokenTrainer:
                 del starts[name]
                 if name == "learn":
                     status = result
+                    episode_status_pending = False
                     if result["updates"]:
                         execution.update_rollout_weights(no_wait=True)
                 elif name == "rollout":
                     applied = result["applied_actor_update"]
                 else:
                     env_status = result
+                    if episode_updates and result.get("episode_ended"):
+                        draining_episode = True
+                        episode_status_pending = True
                     if result.get("faulted"):
                         raise RuntimeError(
                             "Robot execution requires reconciliation; "
                             "the record was durably journaled."
                         )
-            stop = (
-                status["critic_updates"] >= config.train.max_steps
-                or env_status["chunks"] >= config.environment.max_chunks
-            )
+            collection_done = env_status["chunks"] >= config.environment.max_chunks
+            can_update = status["budget"] > 0 and status.get("replay_size", status["admitted"]) >= self.learning.warmup
+            if draining_episode and not can_update and not episode_status_pending:
+                draining_episode = False
+            stop = (status["critic_updates"] >= config.train.max_steps or
+                    (collection_done and (not drain_on_stop or (not can_update and not episode_status_pending))))
             pause = pause or stop or status["critic_updates"] >= next_save
-            ready = (
+            pretrained = status.get("pretrained_ready", False)
+            revision = status.get("ready_revision", status["actor_updates"])
+            ready = (pretrained and applied >= revision) or (
                 status["admitted"] >= self.learning.warmup
                 and status["actor_updates"] >= config.environment.min_actor_updates
                 and applied >= config.environment.min_actor_updates
@@ -215,10 +242,15 @@ class RLTokenTrainer:
                 execution.finish_sync()
                 execution.update_rollout_weights(no_wait=False)
                 applied = execution.applied_actor_update
-                checkpoint = execution.wait(execution.actor.snapshot())
+                if self.learning.td3 is not None:
+                    rollout_rng = execution.wait(execution.rollout.rng_state())
+                    checkpoint = execution.wait(execution.actor.snapshot(rollout_rng=rollout_rng))
+                else:
+                    checkpoint = execution.wait(execution.actor.snapshot())
                 if (
-                    status["admitted"] >= self.learning.warmup
-                    and applied >= config.environment.min_actor_updates
+                    (pretrained and applied >= revision) or
+                    (status["admitted"] >= self.learning.warmup
+                     and applied >= config.environment.min_actor_updates)
                 ):
                     root = self.experiment.run_dir / "rltoken"
                     destination = root / "deployments" / f"actor-{applied}-{uuid.uuid4().hex[:8]}"
@@ -243,14 +275,16 @@ class RLTokenTrainer:
                 next_save = status["critic_updates"] + config.train.save_every
                 pause = False
             # During a checkpoint barrier, keep servicing the last chunk until its durable ACK.
-            if not pause and "env" not in handles:
+            if not pause and not collection_done and not draining_episode and "env" not in handles:
                 launch("env", execution.env.collect_chunk(actor_ready=ready))
             if (not pause or "env" in handles) and "rollout" not in handles:
                 launch("rollout", execution.rollout.serve_slice())
             if (not pause or "env" in handles) and "learn" not in handles:
                 remaining = max(0, config.train.max_steps - status["critic_updates"])
                 launch(
-                    "learn", execution.actor.update(max_updates=0 if pause else min(1, remaining))
+                    "learn", execution.actor.update(max_updates=0 if pause or
+                        (episode_updates and not draining_episode and not collection_done)
+                        else min(1, remaining))
                 )
             if time.monotonic() - last_log > 10:
                 self.experiment.logger.info(
@@ -270,6 +304,8 @@ class RLTokenTrainer:
             "admitted": float(status["admitted"]),
             "budget": float(status["budget"]),
             "deployment_ready": float(deployed),
+            "stop_update_limit": float(status["critic_updates"] >= config.train.max_steps),
+            "stop_collection_limit": float(env_status["chunks"] >= config.environment.max_chunks),
         }
         return TrainResult(
             str(self.experiment.run_dir), checkpoint, status["critic_updates"], metrics
