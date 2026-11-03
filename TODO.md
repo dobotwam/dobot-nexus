@@ -20,13 +20,172 @@
 重新标成“未实现”。归属遵循 [AGENTS.md](AGENTS.md)：算法状态与执行适配归
 `algorithms/rltoken/`，Pi0.5 集成归 `models/pi05/rltoken/`，可复用计算才进入 `modules/`。
 
-### 待实现与文档收尾
+### Dobot 对齐实施状态
+
+双残差配方、冻结 Token、离线缓存/四阶段训练和在线回合定稿已接入，运行说明见
+[双残差配方](docs/rltoken_dobot_recipe.md)。下列实现条目已完成代码接入；
+`RLT-DOBOT-VALIDATION` 的训练收益与真机/分布式验收仍独立保留。
+
+### 实现与验收清单
+
+- [x] **RLT-DOBOT-RECIPE：定义 Dobot-RLT 对齐配方与配置身份**
+
+  对齐参考为 `/share/lujunyu/Dobot-RLT` 的实验 18 严格冻结 Explicit Residual-Q，
+  以及其 Token、离线预训练和 TD3 更新实现。参考入口为 `rlt/networks.py`、
+  `rlt/td3.py`、`scripts/pretrain_td3.py`、`scripts/rlt_online_session.py` 和
+  `docs/05_DualResidual实验.md`；实现时记录参考文件摘要并核对来源许可。
+  最新双残差真机结果在参考实验记录中仍为待填，不将其视为已验证的任务收益。
+  下文 `algorithms/` 与 `models/` 源码路径均相对 `src/dobot_nexus/`。
+
+  新增独立 recipe，显式配置 Actor/Critic 类型、训练阶段、loss reduction、动作边界、
+  bootstrap 策略、step/chunk 折扣单位、target smoothing、探索噪声、Replay 采样和
+  更新预算。参考超参数通过专用配置提供；机器人维度、控制周期、chunk 长度和动作尺度
+  由任务声明。已有 recipe 和 Artifact 按其原有语义加载，新旧训练状态不得隐式混用。
+
+  验收：未知组合启动前失败；算法、特征、codec 或奖励语义变化使恢复身份变化；
+  配方明确区分模块数值对齐、任务参数适配和独立算法消融。
+  入口：`algorithms/rltoken/configuration.py`、`training.py`、`identity.py`、
+  `examples/configs/rltoken/`、`docs/rltoken_integration_plan.md`。
+
+- [x] **RLT-DOBOT-DATA：建立离线特征数据与分来源 Replay**
+
+  通过配置的冻结 provider 缓存示范和纯 VLA 轨迹。分别保存原始 VLA reference、
+  实际执行动作、监督动作及有效 mask；区分离线数据来源、在线决策来源和逐步接管。
+  按实际时间索引构造 chunk 与 next observation，禁止跨 episode 或使用 reset 观测。
+  缓存记录 feature identity、codec、数据版本、采样设置、奖励定义和 episode 划分，
+  并记录各训练阶段实际看过的数据范围。
+
+  支持示范/人工与 VLA/在线两个采样池及 `50/50` 配方，独立管理容量和不足时的补采
+  规则，报告实际采样比例。离线导入不产生在线 UTD；仅新采集、首次定稿准入的记录
+  产生在线预算。MC 标签具有来源和有效 mask，纯 VLA 轨迹的回报可用于基础 Critic；
+  截断尾部不自动视为零回报。
+
+  验收：三种动作不互相覆盖；重复导入/恢复不重复计数；同一 episode 的窗口不跨训练
+  和验证集；示范不会被在线 FIFO 无意淘汰；缓存身份不一致时拒绝使用。
+  入口：`algorithms/rltoken/transitions.py`、`replay.py`，新增算法私有离线数据构建入口。
+
+- [x] **RLT-DOBOT-TD3：实现 Residual Actor 与确定性 TD3 更新**
+
+  增加 Context MLP + LSTM chunk Actor，零初始化动作头；策略输出为 reference 加
+  有界 residual，维度来自 feature spec。统一 Actor、target smoothing 和部署的动作
+  限幅及 codec，支持逐维残差尺度。离线 BC 监督为可达的示范修正；联合训练默认使用
+  residual L2 约束，两者分别定义。确定性 Actor loss 使用 min(Q1,Q2)，支持 Q 动作
+  梯度归一化和梯度裁剪；按上游核对 MSE reduction，避免系数相同但 loss 尺度不同。
+
+  新增 target Actor；TD target 使用其确定性动作加独立平滑噪声，再经动作限幅。
+  环境探索与 target 噪声分别配置、分别使用 RNG，探索允许为零。配置 Critic:Actor
+  更新比及 target 更新时机，对齐配方采用 2:1；支持显式 gamma_chunk 到 gamma_step
+  的换算。稀疏终奖的 target 裁剪范围由奖励配方声明。
+
+  上游会将示范 TD 动作投影到 reference 残差范围：对齐配方必须显式声明该训练视图、
+  记录投影比例并保留原始执行动作/奖励/next state；使用真实动作或筛除范围外样本的
+  版本作为独立消融，不默认为数值等价。BC 目标投影与 TD 动作投影分开管理。
+
+  验收：零 residual 在实际 codec 中复现 reference；确定性 Actor 梯度不依赖探索
+  RNG；target 网络没有梯度；限幅、终止 mask、折扣及更新时钟符合配方；范围外动作
+  不被写回原始 transition。
+  入口：`algorithms/rltoken/actor_critic.py`、`losses.py`、`learner.py`、`policy.py`。
+
+- [x] **RLT-DOBOT-CRITIC：实现严格冻结的双残差 Critic**
+
+  为两个 Q 分支分别增加基础 Q、策略偏移 O 和动作修正 H。Explicit 结构使用
+  `Q = Q_base + L*tanh((O + H(delta) - H(0))/L)`；动作修正分支在 delta=0 时为零，
+  策略偏移允许非零。支持 residual 输入归一化、残差正则、专家方向监督及 terminal
+  RankQ，并将监督资格与各项 loss 的阶段配置分开。
+
+  基础 Critic 阶段使用 VLA reference 和显式配置的 target smoothing 作为 bootstrap，
+  Residual Critic 阶段使用 target residual policy。冻结时从优化器更新集合中排除
+  Base，并冻结在线和 target 两套 Base 的参数与 buffers；Polyak 仅更新允许训练的
+  分支。加载 checkpoint 后恢复冻结规则，不能依赖 state_dict 保存 requires_grad。
+
+  验收：Base 在 Critic 更新、Actor 更新、target 同步及保存恢复后逐位不变；Actor
+  阶段梯度通过 Q 的动作输入而不更新 Critic；方向监督仅使用有效监督样本，失败回合
+  不自动视为专家正例。
+  入口：`algorithms/rltoken/actor_critic.py`、`losses.py`、`learner.py`、`checkpoint.py`。
+
+- [x] **RLT-DOBOT-OFFLINE：增加分阶段预训练与在线初始化**
+
+  增加算法私有阶段 Trainer：Actor BC、Base Critic、固定 Actor 的 Residual Critic、
+  offline joint TD3。阶段显式声明可训练参数、优化器、target 初始化、loss、预算和
+  验证选点；离线运行不需要启动 RLinf/Ray。Actor BC 与基础 Critic 产物可分别准备，
+  组装时校验特征、codec 和任务身份，再训练 Residual Critic 与离线联合策略。
+
+  区分离线初始化新在线任务和中断恢复：前者新建在线会话与预算，并显式声明优化器/
+  target 状态的继承规则；后者恢复完整阶段、采样 RNG、优化器、target 和 Replay。
+  发布包含依赖特征资产的可审计阶段产物，保存 best 与 last，避免仅凭训练步数选点。
+
+  验收：BC 阶段不更新 Critic；critic-only 不更新 Actor/target Actor；初始化和恢复
+  不混淆在线预算；在相同 batch/RNG 下，恢复后的下一次更新与连续训练一致。
+  入口：新增 `algorithms/rltoken/` 下离线阶段入口，复用 `learner.py`、`checkpoint.py`。
+
+- [x] **RLT-DOBOT-TOKEN：增加冻结 VLA 的 bottleneck Token 训练**
+
+  增加 Token-only 模式，冻结 VLA 参数并保持 eval，优化器仅管理 Encoder/Decoder；
+  复用模型拥有的 prefix 提取，避免额外计算动作生成 loss。对齐 image-only bottleneck
+  的 query、attention mask、层结构和重建 reduction，Encoder/Decoder 层数可分别配置。
+  图像 token 选择由 Pi0.5 提供，不在算法层写死 768 个位置。
+
+  使用 episode 级验证和 best checkpoint；增加 zero/shuffle latent 依赖诊断，
+  诊断结果和后续阶段准入规则显式关联。缓存与部署使用一致的图像处理、统计资产、
+  camera/prompt 和采样协议；更新 Token 后生成新 feature identity 并重建特征缓存。
+
+  验收：Token-only 更新不改变 VLA 参数/buffers；Decoder 不读取目标 token 内容；
+  导出后的 Encoder 与训练验证路径一致。表示诊断和 GPU 模型对照留在 local_script。
+  入口：`algorithms/rltoken/token.py`、`models/pi05/rltoken/modeling_stage1.py`、
+  `models/pi05/rltoken/features.py`、`models/pi05/rltoken/data_adapter.py`。
+
+- [x] **RLT-DOBOT-ONLINE：对齐回合更新、Actor 就绪与恢复部署**
+
+  结合 RLT-REWARD 接通回合定稿和审核，支持回合结束后集中更新；有效失败数据保留，
+  pending 和拒绝记录不参与训练。单环境/向量采集均传递明确的探索配置。关键阶段
+  起录/结束由环境适配器提供，通用训练层不包含 USB 或插销任务判断。
+
+  Actor 就绪由离线初始化验收和对应权重的 applied ACK 决定，不能要求已预训练 Actor
+  再累计固定数量的在线更新。发布版本与各阶段更新计数分别管理。明确采集停止、更新
+  上限、剩余预算消费及终止原因；记录目标/实际 UTD 和采样比例。扩展算法私有恢复
+  格式和部署配置，完整保存新网络、阶段、冻结状态、噪声 RNG 和预算；部署继续使用
+  公共 Artifact 与配置的模型 target。
+
+  验收：重复/乱序定稿和恢复不会重复准入；部署只使用已同步完整版本；在线步数为零
+  的合格离线 Actor 可启用；保存恢复和迁移 Artifact 后确定性动作一致。
+  入口：`algorithms/rltoken/training.py`、`env.py`、`simulation.py`、`rollout.py`、
+  `workers_rlinf.py`、`weight_sync.py`、`checkpoint.py`、`policy.py`、`artifacts.py`。
+
+- [x] **RLT-PHASE：独立控制执行阶段与训练数据范围**
+
+  `algorithm.policy_switch` 提供 `execution_scope`、`training_scope` 和 `task_mode`。
+  参考 RLinf 的 readiness/critical-phase 分离：Actor 需同时就绪且允许在当前阶段执行，
+  关键阶段 VLA 预热仍可训练。单环境、向量、离线缓存和部署使用一致的布尔观测信号；
+  环境适配器负责触发、锁存和逐环境 reset。阶段外命令保留执行日志但不入 Replay、
+  不增加 UTD；奖励定稿不能修改阶段事实，缓存与恢复拒绝范围不匹配。
+
+  CPU 验收覆盖混合阶段批量路由、重置、预热、缓存筛选、TD bootstrap、迟到标签、
+  journal 恢复与部署配置。真实任务触发条件与训练收益在下项进行环境验收。
+  入口：`algorithms/rltoken/routing.py`、[阶段配置](docs/rltoken_dobot_recipe.md#执行阶段与训练范围)。
+
+- [ ] **RLT-DOBOT-VALIDATION：逐层验证对齐与任务收益**
+
+  实施顺序：recipe/数据契约 → Residual Actor/TD3 → 双残差 Critic/离线阶段 → 在线
+  定稿与恢复部署；Token-only 可独立完成，完整对齐验收使用其新特征资产。早期算法
+  消融可固定现有 provider，但不得将该结果标为完整 Dobot-RLT 配方复现。
+
+  CPU 模块/契约测试覆盖动作隔离、target/冻结、阶段更新、预算去重与恢复。上游数值
+  对照使用相同权重、输入和噪声，比较 forward、TD target、loss、梯度和一次优化更新；
+  参考脚本、数值/GPU 报告和训练评测均位于 Git 忽略的 local_script，src/tests 不导入
+  对比项目。接入时完成仓库 unittest 与 compileall 检查。
+
+  已完成固定权重 CPU 核心数值对照；辅助项和真实执行的任务评测仍需独立验收。
+  任务评测按 reference 透传 → 小 Actor 纯 BC → 冻结 Actor 训练 Critic → 少量联合
+  更新 → 在线微调逐段执行。固定场景、种子、控制周期和 reference 采样，分别报告成功率、
+  配对成败、动作偏离、Q 排序/梯度、残差饱和和实际 UTD；模块对齐通过不代表任务收益。
+  入口：`tests/algorithms/rltoken/`、`tests/models/pi05/rltoken/`、
+  `docs/rltoken_implementation.md`、`docs/maniskill_evaluation_plan.md`。
 
 - [ ] **RLT-REWARD：打通延迟奖励和审核定稿链路**
 
-  Replay 已支持 pending 与 `commit(..., finalize=True)`，但训练入口只接受
-  `reward_mode=per_step`，采集器和 Worker 尚无 episode 奖励/审核结果的定稿消息。
-  补齐消息身份、定稿权限、持久 ACK 和恢复语义；已参与训练的记录不能被覆盖。
+  已接通 `reward_mode=episode`、`Finalization`、环境 callback、持久 ACK 与重启 pending
+  恢复。尚需对接实际外部奖励/审核服务，验证延迟、断线和真实任务终止语义；
+  已参与训练的记录不能被覆盖。
 
   验收：pending 不增加 UTD；定稿后仅首次准入增加预算；重复、乱序、重启重放不重复
   准入；未知记录和修改执行事实的定稿被拒绝。CPU 协议测试与外部奖励服务联调分别记录。
