@@ -63,6 +63,56 @@ Token 数据默认使用模型的 `build_train_dataloader`。任务拥有其他�
 loader 需返回可索引 dataset 和 collate_fn，并遵守传入的 `data.episode_ids` 划分。
 图像、状态、动作与语言预处理仍应使用模型的数据适配器；任务读取工具放在实验目录。
 
+## 离线缓存与阶段训练
+
+缓存入口可通过 `data.episode_reader=module:function` 读取 `offline_data.Episode`。
+每个 Episode 提供 T 个控制器实际命令、T 个奖励和 takeover，以及 T+1 个实际观测。可单独提供监督动作/mask；时间戳存在时校验控制周期。
+最后一个观测属于同一 episode，不能使用 reset 观测。缓存按各来源的完整 episode
+划分训练/验证，每种来源至少两个 episode，截断尾部没有 MC 标签。
+纯 VLA 回放可提供 `Episode.reference_seeds`，按原始观测索引记录生成命令时的 seed。
+缓存提取对应特征时复用这些 seed，使 reference 与已执行的 VLA chunk 对齐；显式提供
+此映射时必须覆盖全部需要提取特征的观测。未提供时使用缓存的确定性派生 seed。
+
+内置 LeRobot reader 使用共享 reader，并要求数据显式保存最终观测帧：
+`last_frame_is_final_observation=true`，最后一帧的 action 不当作已执行命令。
+只有满足此布局的数据才能使用该选项；普通缺少最终观测的数据应由任务 reader 补齐
+真实记录。`episode_labels` JSON 示例：
+
+```json
+{"0": {"origin": "demo", "terminated": true, "success": true, "accepted": true},
+ "1": {"origin": "vla", "terminated": true, "success": false, "accepted": true}}
+```
+
+配置 `reward_key` 时读取逐步奖励；否则只在完整回合最后执行步生成 success 奖励。
+截断回合必须提供逐步奖励。`takeover_key` 标记逐步接管；VLA 来源中包含接管的轨迹
+不作为纯 VLA MC。失败示范默认只有接管位置可作 BC 监督；额外专家标签通过显式 mask 声明。缓存记录数据版本、奖励身份、折扣、chunk/stride、采样步数、seed、
+特征/codec 身份、episode 划分及完整内容摘要。更新 Token 后必须重建缓存。
+
+离线阶段通过 `algorithm.target=dobot_nexus.algorithms.rltoken.pretraining:RLTokenPretrainTrainer` 选择训练入口，每个阶段使用独立输出目录。
+
+| 阶段 `algorithm.pretrain.phase` | 初始化 `algorithm.pretrain.initialize` | 可更新参数 |
+|---|---|---|
+| `actor_bc` | `{}` | Actor |
+| `base_critic` | `{}` | Base Critic |
+| `residual_critic` | `{actor: /.../actor_bc/rltoken/best.pt, base: /.../base_critic/rltoken/best.pt}` | O、H |
+| `offline_joint` | `{all: /.../residual_critic/rltoken/best.pt}` | Actor、O、H |
+
+每个阶段显式设置 `train.max_steps`、`save_every`、`max_validation_loss`，保存 `best.pt`、
+`last.pt`、完整 checkpoint 和依赖的 `features/`。阶段产物记录数据范围、验证 loss、
+准入结论和已验收组件；缺少验收 Actor/Base 的产物不能初始化残差阶段。
+Critic/joint 的选点指标为验证 Critic loss，**不是任务成功率**；joint 产物仍需配对
+评测后再用于实际任务。独立组件初始化只继承权重，新建 optimizer/target；
+`train.resume_from` 则恢复完整 optimizer、target、采样 RNG、阶段时钟和 Replay。
+两种方式互斥。恢复离线阶段时设 `algorithm.pretrain.initialize={}`；恢复在线任务时设
+`algorithm.initialize_from=null`。迁移阶段产物时保留其 `features/` 和 checkpoints；
+离线续训仍需相同缓存以完成验证。
+
+完整实验可显式使用 `algorithm.pretrain.validation_policy=diagnostic`，省略
+`max_validation_loss`：仍计算验证 loss 并按它保存 best，有限 loss 的产物允许初始化
+下一阶段。产物的 `validation.policy` 记录该选择；此时 `accepted` 只表示允许进入
+后续实验，不代表任务效果已验收。非有限验证 loss 始终报错。默认策略
+`loss_threshold` 保留显式阈值准入。最终收益必须由独立任务评测确定。
+
 ### 执行阶段与训练范围
 
 算法配置通过 `policy_switch` 选择执行和训练范围。

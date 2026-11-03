@@ -131,13 +131,17 @@ class TD3Tests(unittest.TestCase):
             batch['reference_condition'], batch['reference_condition'])
         self.assertTrue((residual[:,0] > 0).all())
 
-    def test_auxiliary_losses_skip_failure_expert(self):
+    def test_auxiliary_losses_skip_failure_expert_and_preserve_validation_rng(self):
         from dataclasses import replace
+        from dobot_nexus.algorithms.rltoken.pretraining import validation_loss
         config = replace(self.config, td3=dict(direction_weight=.01, rank_weight=.1))
         learner = create_learner(self.spec, self.heads, config, self.replay)
         metrics = learner.train_rows(self.rows)
         self.assertGreaterEqual(metrics["direction_loss"], 0)
         self.assertTrue(torch.isfinite(torch.tensor(metrics["critic_loss"])))
+        rng = learner.generator.get_state().clone()
+        validation_loss(learner, self.rows)
+        torch.testing.assert_close(rng, learner.generator.get_state())
         from dobot_nexus.algorithms.rltoken.auxiliary import direction_loss
         batch = residual_batch([self.rows[0]], 2, "cpu")
         self.assertEqual(float(direction_loss(learner.critic, learner.actor, batch)), 0.)
