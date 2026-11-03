@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import torch
 
 from dobot_nexus.algorithms.rltoken.token import (
     TokenConfig,
-    TokenDecoder,
-    TokenEncoder,
+    build_token_modules,
+    latent_diagnostics,
     reconstruction_loss,
 )
 from dobot_nexus.core.artifacts import resolve_artifact
@@ -17,7 +18,7 @@ from dobot_nexus.core.contracts import TrainOutput
 from dobot_nexus.models.pi05.modeling_pi05 import Pi05Model
 
 from .data_adapter import Pi05RLDataAdapter
-from .features import extract_features, feature_spec
+from .features import extract_features, feature_spec, select_token_prefix
 
 
 class Pi05RLTokenModel(Pi05Model):
@@ -50,13 +51,22 @@ class Pi05RLTokenModel(Pi05Model):
             tuple(codec["low"]),
             tuple(codec["high"]),
         )
-        if config.model.get("inference_parameter_precision", "fp32") != "fp32":
+        training_mode = settings.get("training_mode", "joint")
+        frozen_precision = settings.get("frozen_parameter_precision", "fp32")
+        if frozen_precision not in {"fp32", "bf16"} or (
+            frozen_precision != "fp32" and training_mode != "token_only"
+        ):
+            raise ValueError("BF16 frozen provider parameters require token_only training.")
+        if config.model.get("inference_parameter_precision", frozen_precision) != frozen_precision:
             raise ValueError(
-                "RLToken v1 preserves frozen feature identity with FP32 provider parameters."
+                "RLToken inference precision must match frozen_parameter_precision."
             )
-        config.model["inference_parameter_precision"] = "fp32"
+        config.model["inference_parameter_precision"] = frozen_precision
         alpha = settings.get("alpha_vla", 1.0)
-        if not math.isfinite(alpha) or alpha <= 0:
+        training_mode = settings.get("training_mode", "joint")
+        if training_mode not in {"joint", "token_only"}:
+            raise ValueError("Token training_mode must be joint or token_only.")
+        if not math.isfinite(alpha) or (training_mode == "joint" and alpha <= 0):
             raise ValueError("Joint RLToken training requires alpha_vla > 0.")
         if settings.get("initialization", "bc") not in {"bc", "rltoken"}:
             raise ValueError("RLToken initialization must be bc or rltoken.")
@@ -66,8 +76,13 @@ class Pi05RLTokenModel(Pi05Model):
         super().__init__(config, mode=mode)
         self.alpha_vla = float(alpha)
         self.token_config = TokenConfig(**settings["token"])
-        self.token_encoder = TokenEncoder(self.token_config)
-        self.token_decoder = TokenDecoder(self.token_config)
+        self.token_encoder, self.token_decoder = build_token_modules(self.token_config)
+        self.token_only = training_mode == "token_only"
+        if self.token_only:
+            self.core_model.eval().requires_grad_(False)
+            # Match an existing BC deployment without quantizing trainable Token parameters.
+            self.core_model.to(dtype=torch.bfloat16 if frozen_precision == "bf16" else torch.float32)
+            self.pi05_config = replace(self.pi05_config, parameter_precision=frozen_precision)
         if self._stage_state is not None:
             state = self._stage_state
             encoder = {
@@ -96,6 +111,12 @@ class Pi05RLTokenModel(Pi05Model):
             self.token_decoder = None
             self.eval().requires_grad_(False)
 
+    def train(self, mode=True):
+        super().train(mode)
+        if getattr(self, "token_only", False):
+            self.core_model.eval()
+        return self
+
     def _load_core_checkpoint(self):
         if (
             self.mode == "train"
@@ -116,10 +137,15 @@ class Pi05RLTokenModel(Pi05Model):
     def _build_adapter(self, observation_type):
         return Pi05RLDataAdapter(self.pi05_config, self.root_config, observation_type)
 
+    def get_param_groups(self, optim_config):
+        return [p for p in self.parameters() if p.requires_grad]
+
     def build_train_dataloader(self, config):
+        if config.data.get("episode_ids") is not None:
+            self.root_config.data.episode_ids = list(config.data.episode_ids)
         loader = super().build_train_dataloader(config)
         config.data = clone_config(self.root_config).data
-        config.model["inference_parameter_precision"] = "fp32"
+        config.model["inference_parameter_precision"] = self.pi05_config.parameter_precision
         return loader
 
     def artifact_assets(self):
@@ -137,6 +163,22 @@ class Pi05RLTokenModel(Pi05Model):
             if device.type == "cuda"
             else torch.default_generator
         )
+        if self.token_only:
+            if batch.get("model_kwargs"):
+                raise ValueError("Token-only training requires stateless Pi0.5 observations.")
+            from dobot_nexus.models.pi05.torch_core.model import preprocess_observation
+            with torch.no_grad(), torch.autocast(device.type, dtype=self.pi05_config.torch_dtype,
+                    enabled=self.pi05_config.torch_dtype != torch.float32
+                    and self.pi05_config.parameter_precision == "fp32"):
+                prepared = preprocess_observation(batch["observation"], train=False)
+                prefix, valid, _ = self.core_model.build_prefix_cache(prepared)
+            prefix, valid = select_token_prefix(self, prefix, valid, prepared)
+            latent = self.token_encoder(prefix, valid)
+            loss = reconstruction_loss(self.token_decoder(latent, prefix, valid), prefix, valid)
+            metrics = {"token_loss": loss.detach()}
+            if not self.training:
+                metrics.update(latent_diagnostics(self.token_encoder, self.token_decoder, prefix, valid))
+            return TrainOutput(loss, metrics, {"token_loss": loss})
         loss_steps, prefix, valid = self.core_model.compute_loss(
             batch["observation"],
             batch["actions"],
@@ -145,6 +187,7 @@ class Pi05RLTokenModel(Pi05Model):
             _return_prefix=True,
             **batch.get("model_kwargs", {}),
         )
+        prefix, valid = select_token_prefix(self, prefix, valid, batch["observation"])
         latent = self.token_encoder(prefix, valid)
         prediction = self.token_decoder(latent, prefix, valid)
         token_loss = reconstruction_loss(prediction, prefix, valid)

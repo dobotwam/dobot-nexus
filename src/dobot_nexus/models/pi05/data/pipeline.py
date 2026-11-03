@@ -528,6 +528,9 @@ class Pi05Pipeline:
                 )
             )
         transformed = _TransformedDataset(dataset, self)
+        if data.get("episode_ids") is not None:
+            from dobot_nexus.data.lerobot.dataset import episode_indices
+            transformed = torch.utils.data.Subset(transformed, episode_indices(dataset, data.episode_ids))
         seed = int(self.root_config.get("exp", {}).get("seed", 0))
         generator = torch.Generator().manual_seed(seed)
         loader = torch.utils.data.DataLoader(

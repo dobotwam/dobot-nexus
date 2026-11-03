@@ -220,3 +220,34 @@ class LocalLeRobotV21Dataset(torch.utils.data.Dataset):
             )
             item[video_key] = frames.squeeze(0)
         return item
+
+
+def episode_indices(source, episode_ids):
+    """Resolve a whole-episode subset without decoding images or action windows."""
+    wanted = {int(value) for value in episode_ids}
+    if not wanted:
+        raise ValueError("episode_ids must be nonempty.")
+    dataset = getattr(source, "dataset", source)
+    bounds = getattr(dataset, "episode_bounds", None)
+    metadata = Path(getattr(source, "dataset_root", ".")) / "meta/episodes.jsonl"
+    if bounds is None and metadata.is_file():
+        bounds, cursor = {}, 0
+        for episode in load_jsonl(metadata):
+            length = int(episode["length"])
+            bounds[int(episode["episode_index"])] = (cursor, cursor + length)
+            cursor += length
+        if cursor != len(source):
+            raise ValueError("Episode metadata does not describe the full source.")
+    if bounds is not None:
+        missing = wanted - set(bounds)
+        indices = [i for episode in sorted(wanted & set(bounds)) for i in range(*bounds[episode])]
+    else:
+        table = getattr(dataset, "hf_dataset", None)
+        if table is None:
+            raise ValueError("Dataset must expose episode bounds or an episode_index column.")
+        column = [int(value) for value in table["episode_index"]]
+        missing = wanted - set(column)
+        indices = [i for i, episode in enumerate(column) if episode in wanted]
+    if missing:
+        raise ValueError(f"Unknown episode IDs: {sorted(missing)}")
+    return indices

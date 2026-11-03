@@ -40,7 +40,8 @@ def feature_spec(model, *, weights=None):
                } else {}),
             "delta_mask": pipeline.delta_mask.tolist(),
             "control_dt": settings["control_dt"],
-            "inference_profile": "autocast_fp32_parameters_v1",
+            "inference_profile": ("native_bf16_parameters_v1" if model.pi05_config.parameter_precision == "bf16"
+                                  else "autocast_fp32_parameters_v1"),
         }
     )
     return RLFeatureSpec(
@@ -86,11 +87,15 @@ def extract_features(model, observation, options):
 
     def prefix_once(prepared):
         prefix, mask, kv = model.core_model.build_prefix_cache(prepared)
-        captured["latent"] = model.token_encoder(prefix, mask)
+        selected, valid = select_token_prefix(model, prefix, mask, prepared)
+        with torch.autocast(device.type, dtype=model.pi05_config.torch_dtype,
+                            enabled=model.pi05_config.torch_dtype != torch.float32):
+            captured["latent"] = model.token_encoder(selected, valid)
         return prefix, mask, kv
 
     dtype = model.pi05_config.torch_dtype
-    with torch.autocast(device.type, dtype=dtype, enabled=dtype != torch.float32):
+    with torch.autocast(device.type, dtype=dtype,
+                        enabled=dtype != torch.float32 and model.pi05_config.parameter_precision == "fp32"):
         actions = model.core_model.sample_actions(
             encoded.observation, num_steps=steps, noise=noise, rng=generator, _prefix_fn=prefix_once
         )
@@ -124,3 +129,15 @@ def extract_features(model, observation, options):
         ],
     )
     return packet.cpu_copy().validate(spec)
+
+
+def select_token_prefix(model, prefix, valid, observation):
+    if model.token_config.selection == "full":
+        return prefix, valid
+    # Pi0.5 embeds cameras first. Derive positions from its own vision operator.
+    patch_h, patch_w = model.core_model.img.patch_size
+    count = sum((image.shape[-3] // patch_h) * (image.shape[-2] // patch_w)
+                for image in observation.images.values())
+    if count <= 0 or count > prefix.shape[1]:
+        raise ValueError("Pi0.5 image token layout disagrees with prefix shape.")
+    return prefix[:, :count], valid[:, :count]

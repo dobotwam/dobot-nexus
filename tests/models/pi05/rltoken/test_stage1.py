@@ -37,6 +37,26 @@ class TinyPrefixCore(_FakeCore):
 
 
 class Stage1Test(unittest.TestCase):
+    def test_bf16_frozen_provider_survives_artifact_roundtrip(self):
+        self.config.model.rltoken.training_mode = "token_only"
+        self.config.model.rltoken.frozen_parameter_precision = "bf16"
+        model = Pi05RLTokenModel(self.config, mode="train")
+        self.assertEqual(next(model.core_model.parameters()).dtype, torch.bfloat16)
+        self.assertFalse(any(p.requires_grad for p in model.core_model.parameters()))
+        self.assertEqual(next(model.token_encoder.parameters()).dtype, torch.float32)
+        artifact = write_model_bundle(self.root / "bf16", model, model.root_config)
+        provider, _, spec = load_provider(artifact)
+        self.assertEqual(next(provider.core_model.parameters()).dtype, torch.bfloat16)
+        self.assertEqual(spec, model.rl_feature_spec)
+        self.config.model.rltoken.frozen_parameter_precision = "fp32"
+        fp32 = Pi05RLTokenModel(self.config, mode="train")
+        self.assertNotEqual(spec.feature_id, fp32.rl_feature_spec.feature_id)
+
+    def test_bf16_provider_rejects_joint_training(self):
+        self.config.model.rltoken.frozen_parameter_precision = "bf16"
+        with self.assertRaisesRegex(ValueError, "token_only"):
+            Pi05RLTokenModel(self.config, mode="train")
+
     def test_normalized_joint_delta_codec_roundtrip_and_controller_identity(self):
         codec = {
             "name": "normalized_joint_delta_v1", "low": [-1, -1], "high": [1, 1],
@@ -223,6 +243,70 @@ class Stage1Test(unittest.TestCase):
         )
         tokenizer_patch.start()
         self.addCleanup(tokenizer_patch.stop)
+
+    def test_token_trainer_publishes_validation_and_resumes(self):
+        import logging
+        from dobot_nexus.algorithms.rltoken.token_pretraining import TokenPretrainTrainer
+        self.config.model.rltoken.training_mode = "token_only"
+        self.config.model.rltoken.token.width = 6
+        self.config.model.rltoken.token.mode = "bottleneck"
+        self.config.algorithm = _wrap(dict(target="dobot_nexus.algorithms.rltoken.token_pretraining:TokenPretrainTrainer",
+            token=dict(train_episodes=[0,1], validation_episodes=[2,3], min_zero_ratio=1.2, min_shuffle_ratio=1.2)))
+        self.config.exp = _wrap(dict(seed=3))
+        self.config.train.max_steps = 1
+        self.config.train.save_every = 1
+        self.config.data.batch_size = 2
+        def collate(rows):
+            return {"observation": SimpleNamespace(state=torch.ones(len(rows),32)),
+                    "actions": torch.ones(len(rows),3,32)}
+        loader = SimpleNamespace(dataset=[0,1,2,3], collate_fn=collate)
+        experiment = SimpleNamespace(run_dir=self.root/"token-run", logger=logging.getLogger("token-test"))
+        with patch.object(Pi05RLTokenModel, "build_train_dataloader", return_value=loader), patch(
+            "dobot_nexus.models.pi05.rltoken.data_adapter.Pi05RLDataAdapter.encode_train_batch",
+            side_effect=lambda raw, device: raw), patch(
+            "dobot_nexus.models.pi05.torch_core.model.preprocess_observation", side_effect=lambda o, **kw: o):
+            result = TokenPretrainTrainer(self.config, experiment).run()
+            self.assertEqual(result.global_step, 1)
+            report = json.loads((experiment.run_dir/"token/step-000000001/token_validation.json").read_text())
+            self.assertIn("feature_id", report)
+            self.assertFalse(report["accepted"])  # Constant fake prefixes cannot pass shuffle dependence.
+            self.config.train.resume_from = result.checkpoint
+            self.config.train.max_steps = 2
+            resumed = TokenPretrainTrainer(self.config, experiment).run()
+            self.assertEqual(resumed.global_step, 2)
+
+            self.config.train.resume_from = None
+            self.config.train.max_steps = 1
+            self.config.algorithm.token.data_loader = "fixture:loader"
+            experiment.run_dir = self.root / "custom-token-run"
+            supplied = []
+            def custom_loader(model, config):
+                supplied.append(config.data.episode_ids)
+                return loader
+            with patch("dobot_nexus.algorithms.rltoken.token_pretraining.import_from_string",
+                       side_effect=lambda target: custom_loader if target == "fixture:loader" else Pi05RLTokenModel):
+                TokenPretrainTrainer(self.config, experiment).run()
+            self.assertEqual(supplied, [[0,1], [2,3]])
+
+    def test_token_only_keeps_vla_frozen_and_skips_flow_loss(self):
+        from dobot_nexus.algorithms.rltoken.identity import content_digest
+        self.config.model.rltoken.training_mode = "token_only"
+        self.config.model.rltoken.alpha_vla = 0.
+        self.config.model.rltoken.token.width = 6
+        self.config.model.rltoken.token.mode = "bottleneck"
+        model = Pi05RLTokenModel(self.config, mode="train").train()
+        before = content_digest(model.core_model.state_dict())
+        optimizer = torch.optim.Adam(model.get_param_groups({}), lr=.001)
+        self.assertFalse(model.core_model.training)
+        self.assertTrue(all(p.requires_grad for group in optimizer.param_groups for p in group["params"]))
+        with patch("dobot_nexus.models.pi05.torch_core.model.preprocess_observation", side_effect=lambda o, **kw: o):
+            output = model.training_step({"observation": SimpleNamespace(state=torch.ones(2,32)),
+                                          "actions": torch.ones(2,3,32)})
+        output.loss.backward()
+        optimizer.step()
+        self.assertFalse(hasattr(model.core_model, "forward_calls"))
+        self.assertEqual(before, content_digest(model.core_model.state_dict()))
+        self.assertEqual(model.core_model.prefix_calls, 1)
 
     def test_one_forward_and_separate_loss_gradients(self):
         model = Pi05RLTokenModel(self.config, mode="train")

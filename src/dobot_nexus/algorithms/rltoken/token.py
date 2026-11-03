@@ -17,11 +17,22 @@ class TokenConfig:
     max_tokens: int = 2048
     dropout: float = 0.0
     seed: int = 0
+    mode: str = "teacher_forcing"
+    selection: str = "full"
+    encoder_layers: int | None = None
+    decoder_layers: int | None = None
 
     def __post_init__(self):
         for name in ("input_dim", "width", "heads", "layers", "max_tokens"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"Token {name} must be a positive integer.")
+        if self.mode not in {"teacher_forcing", "bottleneck"} or self.selection not in {"full", "image_only"}:
+            raise ValueError("Invalid token mode/selection.")
+        if self.mode == "bottleneck" and self.input_dim != self.width:
+            raise ValueError("Dobot bottleneck requires input_dim == width.")
+        for value in (self.encoder_layers, self.decoder_layers):
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError("Token layer counts must be positive integers.")
         if self.width % self.heads or not 0 <= self.dropout < 1:
             raise ValueError("Token width must divide heads; dropout must be in [0,1).")
 
@@ -45,7 +56,7 @@ class TokenEncoder(nn.Module):
                 norm_first=True,
             )
             self.transformer = nn.TransformerEncoder(
-                layer, config.layers, enable_nested_tensor=False
+                layer, config.encoder_layers or config.layers, enable_nested_tensor=False
             )
             self.norm = nn.LayerNorm(config.width)
 
@@ -80,7 +91,7 @@ class TokenDecoder(nn.Module):
                 batch_first=True,
                 norm_first=True,
             )
-            self.transformer = nn.TransformerDecoder(layer, config.layers)
+            self.transformer = nn.TransformerDecoder(layer, config.decoder_layers or config.layers)
             self.output = nn.Linear(config.width, config.input_dim)
 
     def forward(self, latent, prefix, valid):
@@ -122,3 +133,70 @@ def reconstruction_loss(prediction, prefix, valid):
     if not valid.any():
         raise ValueError("Cannot reconstruct an entirely empty prefix batch.")
     return (prediction[valid].float() - prefix.detach()[valid].float()).square().mean()
+
+
+class BottleneckEncoder(nn.Module):
+    """Equal-width prefix + learned latent query, without an extra output norm."""
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.token = nn.Parameter(torch.randn(1, 1, config.width) * .02)
+        self.position = nn.Parameter(torch.randn(1, config.max_tokens + 1, config.width) * .02)
+        layer = nn.TransformerEncoderLayer(config.width, config.heads, config.width * 4,
+            config.dropout, activation="gelu", batch_first=True, norm_first=True)
+        self.transformer = nn.TransformerEncoder(layer, config.encoder_layers or config.layers,
+                                                 enable_nested_tensor=False)
+
+    def forward(self, prefix, valid):
+        _validate_prefix(prefix, valid, self.config)
+        prefix = torch.where(valid[..., None], prefix.detach(), 0)
+        inputs = torch.cat((prefix, self.token.expand(prefix.shape[0], -1, -1)), 1)
+        inputs = inputs + self.position[:, :inputs.shape[1]]
+        padding = torch.cat((~valid, torch.zeros_like(valid[:, :1])), 1)
+        return self.transformer(inputs, src_key_padding_mask=padding)[:, -1]
+
+
+class BottleneckDecoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.query = nn.Parameter(torch.randn(1, config.max_tokens, config.width) * .02)
+        self.position = nn.Parameter(torch.randn(1, config.max_tokens, config.width) * .02)
+        layer = nn.TransformerEncoderLayer(config.width, config.heads, config.width * 4,
+            config.dropout, activation="gelu", batch_first=True, norm_first=True)
+        self.transformer = nn.TransformerEncoder(layer, config.decoder_layers or config.layers,
+                                                 enable_nested_tensor=False)
+        self.output = nn.Linear(config.width, config.input_dim)
+
+    def forward(self, latent, prefix, valid):
+        # prefix supplies shape only. Target values never enter decoder attention.
+        length = valid.shape[1]
+        if prefix.shape[:2] != valid.shape or length > self.config.max_tokens:
+            raise ValueError("Invalid bottleneck reconstruction shape.")
+        inputs = latent[:, None] + self.query[:, :length] + self.position[:, :length]
+        causal = torch.ones(length, length, device=valid.device, dtype=torch.bool).triu(1)
+        # Image masks may start with absent cameras. Keep one query visible to avoid
+        # all-masked causal rows; outputs at absent positions are excluded from loss.
+        padding = ~valid.clone()
+        padding[:, 0] = False
+        hidden = self.transformer(inputs, mask=causal, src_key_padding_mask=padding)
+        return self.output(hidden)
+
+
+def build_token_modules(config):
+    if config.mode == "bottleneck":
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(config.seed)
+            return BottleneckEncoder(config), BottleneckDecoder(config)
+    return TokenEncoder(config), TokenDecoder(config)
+
+
+@torch.no_grad()
+def latent_diagnostics(encoder, decoder, prefix, valid):
+    """Validation-only dependence diagnostics; no random stream is consumed."""
+    latent = encoder(prefix, valid)
+    original = reconstruction_loss(decoder(latent, prefix, valid), prefix, valid)
+    zero = reconstruction_loss(decoder(torch.zeros_like(latent), prefix, valid), prefix, valid)
+    shuffled = reconstruction_loss(decoder(latent.roll(1, 0), prefix, valid), prefix, valid)
+    return {"reconstruction": float(original), "zero_ratio": float(zero / original.clamp_min(1e-12)),
+            "shuffle_ratio": float(shuffled / original.clamp_min(1e-12))}
