@@ -96,6 +96,7 @@ Pi0.5 的 `absolute_affine_v1` codec 将控制器绝对命令的声明范围映�
 不可编码；参考动作越界会明确失败，不做静默裁剪。
 
 `normalized_joint_delta_v1` 用于已经归一化为 `[-1,1]` 的关节增量控制命令。
+编码与解码逐位保留有限 FP32 命令，包括接近零的微小增量。
 它要求 `units: normalized_joint_delta_and_gripper`，并记录控制器的
 `mode: pd_joint_delta_pos`、`delta_reference: current_qpos`、各关节增量范围和
 夹爪位置范围。控制器参数参与特征身份，避免在相同 8 维数值下混用不同物理语义。

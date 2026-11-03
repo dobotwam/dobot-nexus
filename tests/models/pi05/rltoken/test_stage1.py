@@ -51,9 +51,12 @@ class Stage1Test(unittest.TestCase):
         context = {"observation_id": "x", "raw_state": [[0, 0]], "executed_steps": [1]}
         commands = np.array([[[0.2, -0.8]]], np.float32)
         encoded = adapter.encode_executed_actions(commands, aux=context)
-        np.testing.assert_allclose(
-            adapter.decode_actions(encoded.actions).actions, commands, atol=1e-7
-        )
+        np.testing.assert_array_equal(encoded.actions.numpy(), commands)
+        np.testing.assert_array_equal(adapter.decode_actions(encoded.actions).actions, commands)
+        tiny = np.array([[[1e-10, -1e-9], [1e-4, -1e-4]]], dtype=np.float32)
+        tiny_encoded = adapter.encode_executed_actions(tiny, aux={**context, "executed_steps": [2]})
+        np.testing.assert_array_equal(tiny_encoded.actions.numpy(), tiny)
+        np.testing.assert_array_equal(adapter.decode_actions(tiny_encoded.actions).actions, tiny)
         self.assertTrue(encoded.encodable_mask.all())
         invalid = adapter.encode_executed_actions(commands * 10, aux=context)
         self.assertFalse(invalid.encodable_mask.all())

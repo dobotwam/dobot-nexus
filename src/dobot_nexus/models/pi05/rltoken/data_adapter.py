@@ -77,7 +77,8 @@ class Pi05RLDataAdapter(Pi05DataAdapter):
             raise ValueError("RL actions must have shape [B,C,action_dim].")
         if not torch.isfinite(value).all() or (value.abs() > 1.000001).any():
             raise ValueError("RL actions must be finite and within [-1,1].")
-        commands = self.low + (value + 1) * 0.5 * (self.high - self.low)
+        commands = (value if self.codec_id == "normalized_joint_delta_v1" else
+                    self.low + (value + 1) * 0.5 * (self.high - self.low))
         return PolicyOutput(commands.numpy(), aux=dict(aux or {}))
 
     def encode_executed_actions(self, actions, *, aux=None):
@@ -105,7 +106,10 @@ class Pi05RLDataAdapter(Pi05DataAdapter):
             & (value >= self.low).all(-1)
             & (value <= self.high).all(-1)
         )
-        encoded = 2 * (value - self.low) / (self.high - self.low) - 1
+        # These controller commands already use the RL domain. An affine identity
+        # round trip loses small float32 deltas and can change a closed-loop rollout.
+        encoded = (value if self.codec_id == "normalized_joint_delta_v1" else
+                   2 * (value - self.low) / (self.high - self.low) - 1)
         # Preserve out-of-domain finite values; do not clip a command into a false valid action.
         encoded = torch.where(torch.isfinite(encoded), encoded, torch.zeros_like(encoded))
         return EncodedActionBatch(encoded, valid, encodable, self.codec_id)
