@@ -191,6 +191,10 @@ class EnvSession:
             decision.commands.copy(),
             None if unknown_execution else np.asarray(feedback.commands).copy(),
             self.command_id,
+            critical_phase=decision.critical_phase,
+            record_transition=decision.record_transition,
+            next_actor_enabled=(next_packet.action_context.get("rltoken_routing", {}).get("actor_enabled")
+                                if next_packet is not None else None),
             terminal_candidate_actions=(
                 decision.candidate_actions
                 if feedback.terminated and 0 < feedback.executed_steps < self.chunk_size
@@ -248,6 +252,9 @@ class EnvSession:
             "admission": ack.status,
             "reason": ack.reason,
             "faulted": self.faulted,
+            "critical_phase": row.critical_phase,
+            "actor_switch": row.source == "actor",
+            "record_transition": row.record_transition,
         }
 
     def close(self):

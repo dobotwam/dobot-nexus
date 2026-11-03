@@ -168,6 +168,9 @@ class SimulationSession:
             "faulted": self.faulted,
             "admission": [status["admission"] for status in statuses],
             "reason": [status["reason"] for status in statuses],
+            "critical_phase": [status["critical_phase"] for status in statuses],
+            "actor_switch": [status["actor_switch"] for status in statuses],
+            "record_transition": [status["record_transition"] for status in statuses],
         }
 
     def restore_pending(self, rows):

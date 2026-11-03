@@ -148,6 +148,8 @@ def restore_policy_config(config):
         raise ValueError("Actor deployment weight checksum mismatch.")
     restored = clone_config(config)
     restored.model["rltoken"] = trained.model.rltoken
+    if isinstance(trained.get("algorithm"), dict):
+        restored["algorithm"] = trained.algorithm
     restored.model["features"] = {"artifact": str(child_manifest.parent)}
     restored.model.checkpoint = str(artifact_weight_path(root))
     _, spec, _ = feature_metadata(child_manifest.parent)

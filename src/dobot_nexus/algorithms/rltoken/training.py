@@ -15,9 +15,11 @@ from .artifacts import feature_metadata
 from .batching import environment_batch_size
 from .configuration import HeadConfig, LearningConfig, recipe_identity
 from .identity import content_digest
+from .routing import PolicySwitch
 
 
 def validate_training(config):
+    PolicySwitch.from_config(config)
     runtime = config.get("runtime", {})
     train = config.get("train", {})
     if runtime.get("launcher") != "rlinf":
@@ -103,6 +105,7 @@ class RLTokenTrainer:
             raise ValueError("Feature spec does not cover the configured fixed action chunk.")
         self.task_fingerprint = content_digest(
             {
+                **PolicySwitch.from_config(config).identity(),
                 "feature_spec": spec,
                 "heads": self.heads,
                 "learning": self.learning,

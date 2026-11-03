@@ -24,6 +24,7 @@ from .learner import Learner
 from .policy import RLTokenPolicy
 from .replay import Replay
 from .rollout import RolloutEngine
+from .routing import PolicySwitch
 from .simulation import SimulationSession
 from .weight_sync import ActorSnapshot, ActorVersion
 
@@ -210,6 +211,7 @@ class LearnerWorker(Worker):
             updates_per_new_transition=learning.updates_per_new_transition,
             seed=learning.seed,
             task_fingerprint=self.task_fingerprint,
+            training_scope=PolicySwitch.from_config(self.config).training_scope,
             allow_terminal_chunks=self.config.algorithm.get("recipe") == "rlt_ac_terminal_v2",
         )
         self.learner = Learner(

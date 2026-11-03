@@ -10,6 +10,7 @@ from dobot_nexus.core.contracts import ObservationBatch, SamplingOptions
 from .batching import observation_row, stack_observations
 from .identity import content_digest
 from .policy import sampling_seed
+from .routing import PolicySwitch, routed_actions
 from .weight_sync import WeightSlots
 
 
@@ -20,12 +21,14 @@ class Decision:
     source: str
     actor_version: tuple[str, str, int] | None
     candidate_actions: torch.Tensor | None = None
+    critical_phase: bool | None = None
+    record_transition: bool | None = None
 
 
 class RolloutEngine:
     """Bounded environment caches and one complete Actor version per inference batch."""
 
-    def __init__(self, policy, *, run_id, learner_epoch, seed=0, max_batch_size=1):
+    def __init__(self, policy, *, run_id, learner_epoch, seed=0, max_batch_size=1, policy_switch=None):
         if type(max_batch_size) is not int or max_batch_size <= 0:
             raise ValueError("max_batch_size must be a positive integer.")
         if policy.mode != "infer":
@@ -35,6 +38,8 @@ class RolloutEngine:
             policy.actor, policy.feature_spec.feature_id, run_id, learner_epoch
         )
         self.max_batch_size = max_batch_size
+        self.policy_switch = (PolicySwitch(**policy_switch) if policy_switch is not None else
+                              PolicySwitch.from_config(getattr(policy, "config", {})))
         self.environments = {}
         self.seed = seed
         self.generator = torch.Generator(device=next(policy.actor.parameters()).device).manual_seed(
@@ -47,6 +52,7 @@ class RolloutEngine:
     @torch.no_grad()
     def packets(self, identities, observation):
         observation = ObservationBatch.from_value(observation)
+        phase, enabled, record = self.policy_switch.select(observation)
         if not 0 < len(identities) == observation.batch_size <= self.max_batch_size:
             raise ValueError("Rollout batch size must match identities and the configured limit.")
         env_ids = [identity.env_id for identity in identities]
@@ -65,7 +71,8 @@ class RolloutEngine:
                 raise ValueError("Observation belongs to another run or session epoch.")
             single = observation_row(observation, row)
             fingerprint = content_digest(
-                {"images": single.images, "state": single.state, "prompt": single.prompt}
+                {"images": single.images, "state": single.state, "prompt": single.prompt,
+                 "control": single.control}
             )
             state = self.environments.get(identity.env_id)
             index = int(identity.observation_id)
@@ -114,6 +121,10 @@ class RolloutEngine:
             prepared = [batch.row(index) for index in range(len(missing))]
             for (row, identity, _, fingerprint), packet in zip(missing, prepared, strict=True):
                 packet.action_context["observation_id"] = content_digest(identity)
+                packet.action_context["rltoken_routing"] = {
+                    "critical_phase": None if phase is None else bool(phase[row]),
+                    "actor_enabled": bool(enabled[row]), "record_transition": bool(record[row]),
+                }
                 state = self.environments.get(identity.env_id)
                 if state is None or state["session"] != identity.session:
                     closed = set() if state is None else state["closed"] | {state["session"]}
@@ -144,14 +155,17 @@ class RolloutEngine:
             torch.cat([getattr(packet, name) for packet in packets])
             for name in ("latent", "state", "reference_actions")
         )
-        if actor_ready:
+        enabled = [actor_ready and packet.action_context["rltoken_routing"]["actor_enabled"]
+                   for packet in packets]
+        if any(enabled):
             with self.weights.request() as (actor, version):
                 device = next(actor.parameters()).device
                 actions = (
-                    actor(
+                    routed_actions(actor,
                         latent.to(device),
                         state.to(device),
                         reference.to(device),
+                        enabled, self.policy.head_config.chunk_size,
                         generator=self.generator,
                         deterministic=deterministic,
                     )
@@ -175,9 +189,11 @@ class RolloutEngine:
                 Decision(
                     packet,
                     output.actions.copy(),
-                    "actor" if actor_ready else "reference",
-                    actor_version,
+                    "actor" if enabled[row] else "reference",
+                    actor_version if enabled[row] else None,
                     actions[row : row + 1].clone(),
+                    packet.action_context["rltoken_routing"]["critical_phase"],
+                    packet.action_context["rltoken_routing"]["record_transition"],
                 )
             )
         return decisions

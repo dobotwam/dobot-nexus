@@ -11,6 +11,7 @@ from .configuration import recipe_identity
 from .identity import content_digest
 from .losses import actor_loss, critic_loss, td_target
 from .transitions import training_batch
+from .routing import routed_actions
 
 
 class Learner:
@@ -114,10 +115,11 @@ class Learner:
                 with torch.no_grad():
                     next_values = torch.empty(0, device=self.device)
                     if batch["bootstrap"].any():
-                        next_actions = self.actor(
+                        next_actions = routed_actions(self.actor,
                             batch["next_latent"],
                             batch["next_state"],
                             batch["next_reference"],
+                            batch["next_actor_enabled"], self.heads.chunk_size,
                             generator=self.generator,
                         )
                         next_values = self.target(

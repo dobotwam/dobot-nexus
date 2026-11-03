@@ -28,3 +28,54 @@ Token 数据默认使用模型的 `build_train_dataloader`。任务拥有其他�
 可通过 `algorithm.token.data_loader=module:function` 提供 `(model, config) -> loader`；
 loader 需返回可索引 dataset 和 collate_fn，并遵守传入的 `data.episode_ids` 划分。
 图像、状态、动作与语言预处理仍应使用模型的数据适配器；任务读取工具放在实验目录。
+
+### 执行阶段与训练范围
+
+算法配置通过 `policy_switch` 选择执行和训练范围。
+
+```yaml
+algorithm:
+  policy_switch:
+    task_mode: full_task
+    execution_scope: critical_phase
+    training_scope: critical_phase
+```
+
+两个 scope 独立支持 `all` 或 `critical_phase`。未配置时均为 `all`。
+`execution_scope` 决定哪些观测可以使用 Actor，仍需满足训练就绪和权重 applied ACK；
+`training_scope` 决定哪些 chunk 可以进入 RLT 的离线训练、在线 Replay 和验证数据。
+该范围控制不裁剪 Stage 1 VLA/Token 表示学习数据。
+
+在上述配置下，行为与 RLinf 的 `SimulatorRLTRoute` 阶段控制一致：
+
+| 当前观测处于关键阶段 | Actor 就绪 | 执行动作来源 | Replay 范围资格 |
+|---|---|---|---|
+| 否 | 否或是 | VLA reference | 无 |
+| 是 | 否 | VLA reference | 有 |
+| 是 | 是 | Actor | 有 |
+
+范围资格仍须通过真实执行、动作编码、奖励定稿及审核检查。关键阶段 VLA 预热样本可
+用于训练；阶段外 chunk 仍获得持久执行日志与 ACK，但不挂起奖励标签、不增加 UTD，
+也不能经延迟审核变成训练样本。人工 takeover 与阶段信号分别记录，不互相替代。
+
+`task_mode=full_task` 要求环境适配器在 reset 及每个 post-action observation 中提供：
+
+```python
+observation.control = {"rlt_switch_flags": np.array([in_critical_phase], dtype=np.bool_)}
+```
+
+批量观测使用 bool `[B]`，顺序与 `env_ids` 相同。信号描述**这份观测开始的动作块**；
+在 chunk 执行后才进入关键阶段，不会把刚完成的接近动作块补记为训练样本。
+只在 chunk 边界切换策略，块内控制器接管仍通过实际动作和 takeover 反馈。
+全任务阶段控制启用时，信号缺失会明确报错，不自动当作 Actor 全程可用。
+
+环境适配器拥有任务阈值、键盘触发、锁存和逐环境 reset：例如 RLinf 仿真适配器可将
+`info["rlt_switch_flags"]` 映射到上述字段；真机可在按键切换后保持 true，直到当前
+episode 重置。使用 `latch_until_done` 的任务必须在适配器内只清除已结束环境的状态。
+算法不内置插销距离或 USB 任务判断。`task_mode=critical_phase` 表示环境直接重置到
+精细操作任务，所有观测都视为关键阶段；该选项本身不会移动机器人或裁剪仿真场景。
+
+`all` 训练范围与阶段执行可以组合使用。若下一观测不能使用 Actor，TD bootstrap
+使用原始 VLA reference，不叠加 Actor 修正或 target smoothing；真实终止语义不变。
+单环境、向量采集和部署共用 `routing.py`；非 Actor 行不消耗 Actor 探索噪声。
+部署 Artifact 保留同一份配置，调用方继续提供阶段信号；部署模型视为已就绪。

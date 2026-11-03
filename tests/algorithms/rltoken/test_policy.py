@@ -16,6 +16,30 @@ from .fakes import TinyFeatureModel, observation
 
 
 class PolicyTest(unittest.TestCase):
+    def test_deployment_restores_phase_routing_and_requires_live_signal(self):
+        from .test_routing import SWITCH, flagged
+        config = self.make_config()
+        config.algorithm = _wrap(dict(target="dobot_nexus.algorithms.rltoken.training:RLTokenTrainer",
+                                      policy_switch=SWITCH))
+        policy = RLTokenPolicy(config, mode="infer")
+        root = self.root / "phase-deployment"
+        write_model_bundle(root, policy, config)
+        config.model.artifact = str(root)
+        config.algorithm.policy_switch.execution_scope = "all"
+        loaded = RLTokenPolicy(config, mode="infer")
+        self.assertEqual(loaded.policy_switch.execution_scope, "critical_phase")
+        calls = []
+        hook = loaded.actor.register_forward_pre_hook(lambda module, args: calls.append(len(args[0])))
+        self.addCleanup(hook.remove)
+        with self.assertRaisesRegex(ValueError, "rlt_switch_flags"):
+            loaded.predict_action_chunk(observation(), SamplingOptions())
+        before = loaded.predict_action_chunk(flagged(False), SamplingOptions(deterministic=True))
+        self.assertTrue((before.actions == 0).all())
+        self.assertFalse(before.aux["actor_switch"][0])
+        after = loaded.predict_action_chunk(flagged(True), SamplingOptions(deterministic=True))
+        self.assertTrue(after.aux["actor_switch"][0])
+        self.assertEqual(calls, [1])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

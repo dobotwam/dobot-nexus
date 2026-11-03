@@ -18,3 +18,12 @@ CPU contract tests.
 RLinf Cluster, WorkerGroup, Channel and AsyncWeightSyncMixin are imported from
 the optional pinned dependency, not copied. RLinf is Copyright 2025–2026 The
 RLinf Authors and licensed under Apache License 2.0; see the accompanying LICENSE.
+
+Phase routing follows the readiness/critical-phase separation in RLinf commit
+`7e90641c4135229db6d3426950cdb45cee6259a6`, specifically
+`rlinf/algorithms/rlt/route.py` (`SimulatorRLTRoute`),
+`rlinf/envs/sim/maniskill/maniskill_rlt_env.py`, and
+`rlinf/envs/real/wrappers/episode/policy_switch.py` (inspected 2026-10-29).
+Nexus independently implements per-observation routing and replay eligibility;
+task predicates, keyboard handling, phase latching and episode resets remain in
+the environment adapter. No RLinf environment code is vendored by this feature.

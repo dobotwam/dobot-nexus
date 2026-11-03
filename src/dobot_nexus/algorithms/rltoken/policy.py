@@ -11,6 +11,7 @@ from .actor_critic import Actor, TwinQ
 from .artifacts import feature_metadata, load_provider, restore_policy_config, write_model_bundle
 from .configuration import HeadConfig
 from .losses import actor_loss, critic_loss
+from .routing import PolicySwitch, routed_actions
 
 
 def sampling_seed(seed, stream):
@@ -43,6 +44,7 @@ class RLTokenPolicy(BaseVLAModule):
             raise ValueError("RLTokenPolicy mode must be train or infer.")
         self.config = restore_policy_config(config) if mode == "infer" else config
         self.mode = mode
+        self.policy_switch = PolicySwitch.from_config(self.config)
         self.head_config = HeadConfig(**self.config.model.rltoken)
         root, self.feature_spec, metadata = feature_metadata(self.config.model.features.artifact)
         if (
@@ -125,6 +127,7 @@ class RLTokenPolicy(BaseVLAModule):
     def predict_action_chunk(self, observation, options):
         if self.mode != "infer":
             raise RuntimeError("Learner policy does not load the frozen VLA.")
+        phase, enabled, record = self.policy_switch.select(observation)
         base_seed = (
             options.seed if options.seed is not None else (0 if options.deterministic else None)
         )
@@ -135,14 +138,18 @@ class RLTokenPolicy(BaseVLAModule):
         device = next(self.actor.parameters()).device
         seed = sampling_seed(base_seed, "actor")
         generator = torch.Generator(device=device).manual_seed(seed) if seed is not None else None
-        actions = self.actor(
+        actions = routed_actions(self.actor,
             packet.latent.to(device),
             packet.state.to(device),
             packet.reference_actions.to(device),
+            enabled, self.head_config.chunk_size,
             deterministic=options.deterministic,
             generator=generator,
         )
-        return self.adapter.decode_actions(actions.detach().cpu(), aux=packet.action_context)
+        output = self.adapter.decode_actions(actions.detach().cpu(), aux=packet.action_context)
+        output.aux.update(actor_switch=enabled.copy(), record_transition=record.copy(),
+                          critical_phase=None if phase is None else phase.copy())
+        return output
 
     def save_nexus_weights(self):
         return False
