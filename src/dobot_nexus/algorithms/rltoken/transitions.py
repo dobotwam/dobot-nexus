@@ -52,6 +52,16 @@ class Transition:
         default=None, metadata={"digest_omit_none": True}
     )
 
+    episode_success: bool | None = field(default=None, metadata={"digest_omit_none": True})
+    origin: str | None = field(default=None, metadata={"digest_omit_none": True})
+    supervision: torch.Tensor | None = field(default=None, metadata={"digest_omit_none": True})
+    supervision_mask: torch.Tensor | None = field(default=None, metadata={"digest_omit_none": True})
+    mc_return: float | None = field(default=None, metadata={"digest_omit_none": True})
+    mc_source: str | None = field(default=None, metadata={"digest_omit_none": True})
+    critical_phase: bool | None = field(default=None, metadata={"digest_omit_none": True})
+    record_transition: bool | None = field(default=None, metadata={"digest_omit_none": True})
+    next_actor_enabled: bool | None = field(default=None, metadata={"digest_omit_none": True})
+
     @property
     def key(self):
         if not isinstance(self.chunk_id, str) or not self.chunk_id:
@@ -70,6 +80,10 @@ class Transition:
             self.executed.encodable_mask.detach().cpu().contiguous().clone(),
             self.executed.action_codec,
         )
+        for name in ("supervision", "supervision_mask"):
+            value = getattr(self, name)
+            if value is not None:
+                setattr(result, name, value.detach().cpu().contiguous().clone())
         result.takeover = self.takeover.detach().cpu().contiguous().clone()
         if self.terminal_candidate_actions is not None:
             result.terminal_candidate_actions = (
@@ -82,14 +96,40 @@ class Transition:
         )
         return result
 
-    def admission(self, spec: RLFeatureSpec, chunk_size: int, *, allow_terminal_chunks=False):
+    def admission(self, spec: RLFeatureSpec, chunk_size: int, *, allow_terminal_chunks=False,
+                  training_scope="all"):
+        for value in (self.critical_phase, self.record_transition, self.next_actor_enabled):
+            if value is not None and type(value) is not bool:
+                return "rejected", "invalid_phase_control"
+        if not self.execution_confirmed:
+            return "rejected", "unconfirmed_execution"
+        if training_scope == "critical_phase" and self.critical_phase is None:
+            return "rejected", "missing_critical_phase"
+        if self.record_transition is False or (training_scope == "critical_phase" and not self.critical_phase):
+            return "rejected", "outside_training_scope"
         if not self.reward_finalized or self.accepted is None:
             return "pending", "awaiting_reward_or_gate"
         if self.accepted is not True:
             return "rejected", "record_gate"
-        if not self.execution_confirmed:
-            return "rejected", "unconfirmed_execution"
         try:
+            if self.episode_success is not None and type(self.episode_success) is not bool:
+                return "rejected", "invalid_episode_outcome"
+            if self.origin not in {None, "demo", "vla", "online"}:
+                return "rejected", "invalid_data_origin"
+            if (self.supervision is None) != (self.supervision_mask is None):
+                return "rejected", "incomplete_supervision"
+            if self.supervision is not None:
+                if (self.supervision.shape != (1, chunk_size, spec.action_dim)
+                        or self.supervision_mask.shape != (1, chunk_size)
+                        or self.supervision_mask.dtype != torch.bool
+                        or not torch.isfinite(self.supervision[self.supervision_mask]).all()
+                        or (self.supervision[self.supervision_mask].abs() > 1.000001).any()
+                        or (self.supervision_mask & ~self.executed.executed_mask).any()):
+                    return "rejected", "invalid_supervision"
+            if self.mc_return is not None:
+                import math
+                if not math.isfinite(self.mc_return) or self.mc_source not in {"vla", "demo", "online"}:
+                    return "rejected", "invalid_mc_label"
             self.features.validate(spec, chunk_size=chunk_size)
             self.executed.validate(spec)
             if self.features.latent.shape[0] != 1 or self.executed.actions.shape != (
@@ -184,4 +224,47 @@ def training_batch(rows, chunk_size, device):
         "next_latent": cat("latent", next_packets) if next_packets else None,
         "next_state": cat("state", next_packets) if next_packets else None,
         "next_reference": cat("reference_actions", next_packets) if next_packets else None,
+        "next_actor_enabled": torch.tensor([row.next_actor_enabled is not False
+                                            for row in rows if not row.terminated],
+                                           device=device, dtype=torch.bool),
     }
+
+
+def residual_batch(rows, chunk_size, device):
+    batch = training_batch(rows, chunk_size, device)
+    reference = torch.cat([r.features.reference_actions[:, :chunk_size] for r in rows]).to(device)
+    batch["reference_condition"] = reference
+    batch["valid"] = torch.cat([r.executed.executed_mask for r in rows]).to(device)
+    batch["supervision"] = torch.cat([
+        r.supervision if r.supervision is not None else r.executed.actions for r in rows
+    ]).to(device)
+    batch["supervision_mask"] = torch.cat([
+        r.supervision_mask if r.supervision_mask is not None else
+        (r.executed.executed_mask & (r.takeover[None] if r.origin != "demo"
+                                    else torch.ones_like(r.executed.executed_mask)))
+        for r in rows]).to(device)
+    batch["mc_return"] = torch.tensor([r.mc_return or 0.0 for r in rows], device=device)
+    batch["mc_valid"] = torch.tensor([r.mc_return is not None and r.mc_source == "vla"
+                                      for r in rows], dtype=torch.bool, device=device)
+    batch["success"] = torch.tensor([
+        r.episode_success if r.episode_success is not None else
+        (r.mc_return is not None and r.mc_return > 0) or (r.terminated and bool(r.rewards.sum() > 0))
+        for r in rows], device=device)
+    batch["failure"] = torch.tensor([
+        not r.episode_success if r.episode_success is not None else
+        r.mc_return == 0 or (r.terminated and bool(r.rewards.sum() == 0))
+        for r in rows], device=device)
+    batch["truncated"] = torch.tensor([r.truncated for r in rows], device=device)
+    batch["terminal_success"] = torch.tensor([
+        r.terminated and bool(r.rewards.sum() > 0) for r in rows], device=device)
+    batch["terminal_failure"] = torch.tensor([
+        r.terminated and bool(r.rewards.sum() == 0) for r in rows], device=device)
+    return batch
+
+
+@dataclass(frozen=True)
+class Finalization:
+    key: tuple[str, ...]
+    rewards: torch.Tensor
+    accepted: bool
+    episode_success: bool | None = None
