@@ -54,3 +54,17 @@ class TwinQ(nn.Module):
     def forward(self, latent, state, actions):
         inputs = torch.cat((latent, state, actions.flatten(1)), -1).float()
         return torch.cat((self.q1(inputs), self.q2(inputs)), -1)
+
+
+def build_actor(spec, config):
+    if config.residual is not None:
+        from .residual import ResidualActor
+        return ResidualActor(spec, config)
+    return Actor(spec, config)
+
+
+def build_critic(spec, config):
+    if config.residual is not None:
+        from .residual import ExplicitResidualQ
+        return ExplicitResidualQ(spec, config)
+    return TwinQ(spec, config)

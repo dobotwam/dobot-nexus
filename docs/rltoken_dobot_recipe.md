@@ -1,5 +1,39 @@
 # RLToken 双残差配方
 
+## 算法与数据
+
+Actor 使用 Context MLP + LSTM，输出 `reference + rho*tanh(head)`，动作头零初始化。
+`rho` 必须逐维声明，单位为 provider 的动作 codec；示例的 14 维、6 步和 0.05 尺度
+仅是可编辑任务声明。所有执行动作满足 codec 的 `[-1,1]` 边界。
+
+两个 Q 分支分别计算 `Q_base + L*tanh((O + H(delta/rho) - H(0))/L)`。
+Base Critic 阶段拟合记录动作的显式投影视图，以 VLA reference + smoothing bootstrap；
+Residual Critic 和 joint 阶段改用独立 target Actor。Base 的在线参数、target 参数均冻结，
+不在残差优化器中，也不参与残差阶段 Polyak。这是定义基础 VLA 价值的配方选择；
+不要将上游所有预训练命令中使用 target Actor 的 Base bootstrap 视为同一个实验。
+
+TD loss 为两个 Q 的 batch MSE 之和；Base MC 项为两个 Q 的平均 MSE，只对完整纯 VLA
+轨迹的有效 MC 标签启用。`gamma` 默认解释为 chunk 折扣，内部换算为 `gamma**(1/C)`。
+稀疏终奖示例把 TD target 裁剪至 `[0,1]`，其他奖励必须更换任务身份并声明范围。
+`td_action_view=project` 明确投影 Critic 的训练动作；`executed` 为独立消融。
+投影不改变实际执行动作、reward 或 next observation。
+
+Actor BC 使用有效监督 mask，目标为可达的示范修正。joint loss 使用确定性动作、
+`min(Q1,Q2)`、batch 级 Q 动作梯度范数归一化和 residual L2；梯度裁剪为 1。
+每两次 Critic 更新进行一次 Actor 更新，然后同步两套 target；critic-only 每步更新
+Critic target，Actor/target Actor 保持不变。探索和 target smoothing 使用独立 RNG。
+
+辅助项默认关闭。可分别启用 residual Q L2、成功且有有效专家监督样本的 Q 动作梯度
+方向对齐、terminal RankQ。RankQ 比较同一终止成功状态下的记录动作、小/大扰动、
+随机和错配动作，并可加入成功前序状态和失败轨迹的支持项；失败轨迹不参加专家方向监督。
+这些系数、RankQ 类型与温度都进入恢复身份，需分别做消融。
+
+Replay 保存原始 reference、实际执行动作、监督动作及其 mask。`origin=demo/vla/online`
+与决策 `source`、逐步 takeover 分别记录。`demo_joint_50` 每个 batch 各抽一半：
+示范/接管池，以及 VLA/在线池；空池时从另一池补齐，容量和字节上限独立。
+只有新在线记录第一次定稿准入才增加 UTD。报告 `online_admitted`、`target_utd`、
+`actual_utd`、`sample_demo_fraction` 和 TD 投影比例。
+
 ## Token 预训练
 
 ```bash

@@ -48,7 +48,7 @@ class Learner:
             {
                 "spec": spec,
                 "heads": heads,
-                "learning": asdict(config),
+                "learning": {k: v for k, v in asdict(config).items() if k != "td3" or v is not None},
                 "recipe": recipe_identity(
                     "rlt_ac_terminal_v2" if replay.allow_terminal_chunks else "rlt_ac_fixed_v1"
                 ),
@@ -203,3 +203,12 @@ class Learner:
         self.critic_updates, self.actor_updates = state["critic_updates"], state["actor_updates"]
         self.generator.set_state(state["generator"].cpu())
         self.replay.load_state_dict(state["replay"])
+
+
+def create_learner(spec, heads, config, replay, **kwargs):
+    if config.td3 is not None:
+        from .td3 import TD3Learner
+        return TD3Learner(spec, heads, config, replay, **kwargs)
+    if heads.residual is not None:
+        raise ValueError("Residual heads require TD3 learning configuration.")
+    return Learner(spec, heads, config, replay, **kwargs)

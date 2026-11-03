@@ -87,6 +87,26 @@ class PolicyTest(unittest.TestCase):
             }
         )
 
+    def test_residual_deployment_preserves_reference_and_sampler_config(self):
+        config = self.make_config()
+        config.algorithm = _wrap(dict(target="dobot_nexus.algorithms.rltoken.training:RLTokenTrainer",
+                                      reference_num_steps=17))
+        config.model.rltoken.residual = _wrap(dict(rho=[.1,.1], actor_width=8, critic_width=8))
+        policy = RLTokenPolicy(config, mode="infer")
+        before = policy.predict_action_chunk(observation(), SamplingOptions(deterministic=True))
+        self.assertTrue((before.actions == 0).all())
+        artifact = self.root / "residual"
+        write_model_bundle(artifact, policy, config)
+        moved = self.root / "moved-residual"
+        artifact.rename(moved)
+        shutil.rmtree(config.model.features.artifact)
+        cfg = _wrap(dict(schema_version=1, task="infer", model=dict(target=config.model.target,
+                    artifact=str(moved)), runtime=dict(device="cpu")))
+        loaded = InferencePolicy(cfg)
+        after = loaded.predict_chunk(observation(), SamplingOptions(deterministic=True))
+        torch.testing.assert_close(torch.from_numpy(before.actions), torch.from_numpy(after.actions))
+        self.assertEqual(loaded.model.config.algorithm.reference_num_steps, 17)
+
     def test_two_providers_frozen_and_deploy_without_source_artifact(self):
         for action, latent, proprio in ((2, 4, 3), (3, 7, 2)):
             config = self.make_config(action, latent, proprio)

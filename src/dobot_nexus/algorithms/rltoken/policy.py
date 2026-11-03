@@ -7,7 +7,7 @@ import torch
 from dobot_nexus.core.contracts import PolicySpec, TrainOutput
 from dobot_nexus.models.base import BaseDataAdapter, BaseVLAModule
 
-from .actor_critic import Actor, TwinQ
+from .actor_critic import build_actor, build_critic
 from .artifacts import feature_metadata, load_provider, restore_policy_config, write_model_bundle
 from .configuration import HeadConfig
 from .losses import actor_loss, critic_loss
@@ -56,16 +56,16 @@ class RLTokenPolicy(BaseVLAModule):
             raise ValueError("Raw robot state_dim must match the feature provider.")
         self._policy_spec = PolicySpec(
             "rltoken",
-            "rlt_ac_v1",
+            "rlt_td3_dual_residual_v1" if self.head_config.residual is not None else "rlt_ac_v1",
             tuple(metadata["camera_names"]),
             self.config.model.state_dim,
             self.feature_spec.action_dim,
             self.head_config.chunk_size,
             tuple(metadata.get("image_size", (224, 224))),
         )
-        self.actor = Actor(self.feature_spec, self.head_config)
+        self.actor = build_actor(self.feature_spec, self.head_config)
         if mode == "train":
-            self.critic = TwinQ(self.feature_spec, self.head_config)
+            self.critic = build_critic(self.feature_spec, self.head_config)
             self.adapter = ReplayAdapter()
         else:
             self.provider, self.provider_config, _ = load_provider(root)
@@ -106,6 +106,8 @@ class RLTokenPolicy(BaseVLAModule):
     def training_step(self, batch):
         if self.mode != "train":
             raise RuntimeError("training_step requires a learner policy.")
+        if self.head_config.residual is not None:
+            raise RuntimeError("Residual TD3 updates belong to TD3Learner and its phase optimizers.")
         if batch["update"] == "critic":
             loss = critic_loss(
                 self.critic(batch["latent"], batch["state"],
@@ -131,7 +133,12 @@ class RLTokenPolicy(BaseVLAModule):
         base_seed = (
             options.seed if options.seed is not None else (0 if options.deterministic else None)
         )
-        reference_options = replace(options, seed=sampling_seed(base_seed, "reference"))
+        algorithm = self.config.get("algorithm", {})
+        reference_steps = algorithm.get("reference_num_steps", 10) if isinstance(algorithm, dict) else 10
+        reference_options = replace(options, seed=sampling_seed(base_seed, "reference"),
+            num_steps=(options.num_steps if options.num_steps is not None else
+                       reference_steps
+                       if self.head_config.residual is not None else None))
         packet = self.provider.extract_rl_features(observation, reference_options).validate(
             self.feature_spec, chunk_size=self.head_config.chunk_size
         )
@@ -178,5 +185,5 @@ class RLTokenPolicy(BaseVLAModule):
         return {
             **super().artifact_metadata(),
             "rl_features": self.feature_spec.to_dict(),
-            "algorithm": "rlt_ac_v1",
+            "algorithm": "rlt_td3_dual_residual_v1" if self.head_config.residual is not None else "rlt_ac_v1",
         }

@@ -43,7 +43,7 @@ def save_resume(root, learner, *, task_fingerprint, run_id, feature_manifest=Non
     finally:
         backup.close()
     manifest = {
-        "format": "rltoken_resume_v1",
+        "format": getattr(learner, "resume_format", "rltoken_resume_v1"),
         "state_digest": content_digest(state),
         "run_id": run_id,
         "feature_manifest": feature_manifest,
@@ -69,7 +69,7 @@ def save_resume(root, learner, *, task_fingerprint, run_id, feature_manifest=Non
 def load_resume(path, learner, *, task_fingerprint):
     path = Path(path)
     manifest = json.loads((path / "manifest.json").read_text())
-    if manifest.get("format") != "rltoken_resume_v1":
+    if manifest.get("format") != getattr(learner, "resume_format", "rltoken_resume_v1"):
         raise ValueError("Not an RLToken multi-optimizer checkpoint.")
     state = torch.load(path / "state.pt", map_location="cpu", weights_only=False)
     if content_digest(state) != manifest["state_digest"]:
