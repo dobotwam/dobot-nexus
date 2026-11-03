@@ -17,6 +17,7 @@ def observation_row(observation, index):
         observation.timestamps[index : index + 1].copy()
         if observation.timestamps is not None
         else None,
+        {name: value[index : index + 1].copy() for name, value in observation.control.items()},
     ).validate()
 
 
@@ -33,12 +34,16 @@ def stack_observations(observations, env_ids):
     timestamps = [value.timestamps is not None for value in observations]
     if any(timestamps) and not all(timestamps):
         raise ValueError("Batch rows must agree on whether timestamps are provided.")
+    controls = set(observations[0].control)
+    if any(set(value.control) != controls for value in observations):
+        raise ValueError("Batch rows must provide identical control signal names.")
     return ObservationBatch(
         {name: np.concatenate([value.images[name] for value in observations]) for name in cameras},
         np.concatenate([value.state for value in observations]),
         [value.prompt[0] for value in observations],
         list(env_ids),
         np.concatenate([value.timestamps for value in observations]) if all(timestamps) else None,
+        {name: np.concatenate([value.control[name] for value in observations]) for name in controls},
     ).validate()
 
 

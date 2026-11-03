@@ -30,6 +30,8 @@ class ObservationBatch:
     prompt: list[str]
     env_ids: list[str] | None = None
     timestamps: np.ndarray | None = None
+    # Per-observation boolean control signals; their semantics belong to algorithms.
+    control: dict[str, np.ndarray] = field(default_factory=dict)
 
     @classmethod
     def from_value(cls, value: ObservationBatch | dict[str, Any]) -> ObservationBatch:
@@ -50,6 +52,7 @@ class ObservationBatch:
                 timestamps=(
                     _as_numpy(value["timestamps"]) if value.get("timestamps") is not None else None
                 ),
+                control=dict(value.get("control", {})),
             )
         else:
             raise TypeError(f"Observation must be ObservationBatch or dict, got {type(value)!r}.")
@@ -98,6 +101,13 @@ class ObservationBatch:
 
         if self.env_ids is not None and len(self.env_ids) != batch_size:
             raise ValueError("env_ids must contain one id per observation.")
+        control = {}
+        for name, raw in self.control.items():
+            signal = _as_numpy(raw)
+            if not isinstance(name, str) or not name or signal.shape != (batch_size,) or signal.dtype != np.bool_:
+                raise ValueError("Observation control signals require a nonempty name and bool [B] values.")
+            control[name] = np.ascontiguousarray(signal).copy()
+        self.control = control
         self.images = images
         self.state = state
         return self
