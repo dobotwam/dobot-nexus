@@ -38,6 +38,8 @@ class SimulationSession:
             raise
 
     def _collect(self, rollout, commit, *, actor_ready):
+        for session in self.sessions:
+            session.poll_finalizations(commit)
         reset_indices = [
             index for index, session in enumerate(self.sessions) if session.identity is None
         ]
@@ -61,6 +63,7 @@ class SimulationSession:
                 "identities": identities,
                 "observation": observation,
                 "actor_ready": actor_ready,
+                "deterministic": self.sessions[0].deterministic,
             }
         )
         if len(decisions) != len(self.sessions):
@@ -149,6 +152,8 @@ class SimulationSession:
             ack.key != row.key for ack, row in zip(acks, rows, strict=True)
         ):
             raise ValueError("Durable ACKs do not match the simulation batch.")
+        for session, row, feedback, ack in zip(self.sessions, rows, feedbacks, acks, strict=True):
+            session.finalize_feedback(row, feedback, ack, commit)
         statuses = [
             session.acknowledge(row, feedback, ack)
             for session, row, feedback, ack in zip(
@@ -157,12 +162,17 @@ class SimulationSession:
         ]
         self.faulted = any(status["faulted"] for status in statuses)
         return {
+            "episode_ended": any(status["episode_ended"] for status in statuses),
             "chunks": sum(status["chunks"] for status in statuses),
             "env_steps": sum(status["env_steps"] for status in statuses),
             "faulted": self.faulted,
             "admission": [status["admission"] for status in statuses],
             "reason": [status["reason"] for status in statuses],
         }
+
+    def restore_pending(self, rows):
+        for session in self.sessions:
+            session.restore_pending(rows)
 
     def close(self):
         if not self.closed:

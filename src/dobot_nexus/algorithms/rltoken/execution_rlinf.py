@@ -96,6 +96,9 @@ class RLinfExecution(AsyncWeightSyncMixin, _BlockingSync):
         wait_result(handles["rollout"], self.timeout)
         status = wait_result(handles["actor"], self.timeout)
         wait_result(handles["env"], self.timeout)
+        if self.config.environment.get("reward_mode") == "episode":
+            pending = wait_result(self.actor.pending(), self.timeout)
+            wait_result(self.env.restore_pending(pending), self.timeout)
         self.update_rollout_weights(no_wait=False)
         return status
 

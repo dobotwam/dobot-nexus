@@ -10,7 +10,7 @@ import torch
 
 from dobot_nexus.core.contracts import ObservationBatch
 
-from .transitions import ObservationID, Transition
+from .transitions import Finalization, ObservationID, Transition
 
 
 @dataclass
@@ -42,9 +42,17 @@ class EnvSession:
         action_dim,
         timeout=30.0,
         bootstrap_truncation=False,
+        reward_mode="per_step",
+        deterministic=False,
     ):
         if timeout <= 0:
             raise ValueError("Environment timeout must be positive.")
+        if reward_mode not in {"per_step", "episode"}:
+            raise ValueError("Unknown reward_mode.")
+        if reward_mode == "episode" and not callable(getattr(agent, "finalize_episode", None)):
+            raise TypeError("Episode reward adapter must implement finalize_episode().")
+        self.reward_mode, self.deterministic = reward_mode, deterministic
+        self.pending_records = {}
         self.agent = agent
         self.run_id, self.env_id, self.session_epoch = run_id, env_id, session_epoch
         self.chunk_size, self.action_dim = chunk_size, action_dim
@@ -58,6 +66,7 @@ class EnvSession:
             raise RuntimeError(
                 "Environment session is closed or requires execution reconciliation."
             )
+        self.poll_finalizations(commit)
         if self.observation is None:
             self.reset_to(self.agent.reset(timeout=self.timeout))
         decision = rollout(
@@ -66,6 +75,7 @@ class EnvSession:
                 "identity": self.identity,
                 "observation": self.observation,
                 "actor_ready": actor_ready,
+                "deterministic": self.deterministic,
             }
         )
         command_id = self.command_id
@@ -94,6 +104,7 @@ class EnvSession:
             decision, feedback, rollout, unknown_execution=unknown_execution
         )
         ack = commit(row)  # durable ACK precedes the next motor command
+        self.finalize_feedback(row, feedback, ack, commit)
         return self.acknowledge(row, feedback, ack)
 
     @property
@@ -173,8 +184,8 @@ class EnvSession:
             feedback.truncated,
             self.bootstrap_truncation,
             feedback.confirmed,
-            feedback.reward_finalized,
-            feedback.accepted,
+            feedback.reward_finalized if self.reward_mode == "per_step" else False,
+            feedback.accepted if self.reward_mode == "per_step" else None,
             decision.source,
             decision.actor_version,
             decision.commands.copy(),
@@ -186,6 +197,34 @@ class EnvSession:
                 else None
             ),
         )
+
+    def restore_pending(self, rows):
+        self.pending_records = {row.key: row for row in rows if row.observation_id.env_id == self.env_id}
+
+    def apply_finalizations(self, labels, commit):
+        for label in labels or ():
+            if not isinstance(label, Finalization) or label.key not in self.pending_records:
+                raise ValueError("Adapter finalization must identify a pending record owned by this environment.")
+            ack = commit(label)
+            if ack.key != label.key or ack.status == "pending":
+                raise ValueError("Finalization requires a durable terminal ACK.")
+            del self.pending_records[label.key]
+
+    def poll_finalizations(self, commit):
+        callback = getattr(self.agent, "poll_finalizations", None)
+        if self.pending_records and callable(callback):
+            self.apply_finalizations(callback(pending=tuple(self.pending_records.values()),
+                                              timeout=self.timeout), commit)
+
+    def finalize_feedback(self, row, feedback, ack, commit):
+        if ack.status == "pending":
+            self.pending_records[row.key] = row.cpu_copy()
+        if self.reward_mode == "episode" and (feedback.terminated or feedback.truncated):
+            pending = tuple(r for r in self.pending_records.values()
+                            if r.observation_id.session == row.observation_id.session)
+            labels = self.agent.finalize_episode(env_id=self.env_id,
+                episode_id=row.observation_id.episode_id, pending=pending, timeout=self.timeout)
+            self.apply_finalizations(labels, commit)
 
     def acknowledge(self, row, feedback, ack):
         if ack.key != row.key:
@@ -203,6 +242,7 @@ class EnvSession:
         else:
             self.observation, self.identity = feedback.final_observation, row.next_observation_id
         return {
+            "episode_ended": feedback.terminated or feedback.truncated,
             "chunks": self.chunks,
             "env_steps": self.executed_steps,
             "admission": ack.status,

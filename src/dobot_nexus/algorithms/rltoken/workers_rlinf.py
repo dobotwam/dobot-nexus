@@ -78,8 +78,14 @@ class EnvProxyWorker(Worker):
             action_dim=self.config.model.action_dim,
             timeout=cfg.timeout,
             bootstrap_truncation=cfg.bootstrap_truncation,
+            reward_mode=cfg.get("reward_mode", "per_step"),
+            deterministic=cfg.get("deterministic", False),
             **({"batch_size": self.batch_size} if self.simulation else {}),
         )
+        return True
+
+    def restore_pending(self, rows):
+        self.session.restore_pending(rows)
         return True
 
     def _rollout(self, request):
@@ -236,6 +242,9 @@ class LearnerWorker(Worker):
         result = self.learner.update(max_updates)
         result.pop("acks", None)
         return result
+
+    def pending(self):
+        return self.learner.replay.pending()
 
     def sync_model_to_rollout(self):
         self.learner.barrier()

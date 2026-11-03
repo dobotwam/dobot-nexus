@@ -62,6 +62,38 @@ class ConfirmingAgent:
 
 
 class EnvRolloutTest(unittest.TestCase):
+    def test_episode_labels_are_finalized_after_durable_pending_ack(self):
+        from dobot_nexus.algorithms.rltoken.transitions import Finalization
+        agent = ConfirmingAgent()
+        execute = agent.execute
+        def terminal(*args, **kwargs):
+            return replace(execute(*args, **kwargs), terminated=True)
+        agent.execute = terminal
+        seen = []
+        def finalize(**kwargs):
+            self.assertEqual(self.replay.budget, 0)
+            self.assertEqual(len(self.replay.pending()), 1)
+            seen.extend(kwargs["pending"])
+            return [Finalization(row.key, torch.tensor([0., 0.]), True) for row in kwargs["pending"]]
+        agent.finalize_episode = finalize
+        session = EnvSession(agent, run_id="run", env_id="env", session_epoch="epoch",
+                             chunk_size=2, action_dim=2, reward_mode="episode", deterministic=True)
+        status = session.collect_chunk(self.engine.process, self.replay.commit)
+        self.assertTrue(status["episode_ended"])
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(self.replay.budget, 1)
+        self.assertFalse(session.pending_records)
+        self.assertTrue(next(iter(self.replay.rows.values()))[0].rewards.eq(0).all())
+
+    def test_scalar_decision_forwards_deterministic_option(self):
+        request = dict(operation="decide", identity=ObservationID("run", "env", "epoch", "ep", "0"),
+                       observation=observation(), actor_ready=True, deterministic=True)
+        before = self.engine.generator.get_state().clone()
+        first = self.engine.process(request)
+        second = self.engine.process(request)
+        np.testing.assert_array_equal(first.commands, second.commands)
+        torch.testing.assert_close(before, self.engine.generator.get_state())
+
     def test_unresolved_execution_is_journaled_and_stops_the_session(self):
         agent = ConfirmingAgent(timeout=True)
 

@@ -206,7 +206,8 @@ class RolloutEngine:
             return [self.encode(*row) for row in rows]
         if operation == "decide":
             return self.decide(
-                request["identity"], request["observation"], actor_ready=request["actor_ready"]
+                request["identity"], request["observation"], actor_ready=request["actor_ready"],
+                deterministic=request.get("deterministic", False)
             )
         if operation == "features":
             return self.packet(request["identity"], request["observation"])

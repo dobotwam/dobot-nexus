@@ -163,9 +163,9 @@ class RobotAgent:
 只查询，不重新发送电机命令。适配器负责真正落实 I/O deadline，Nexus 无法取消已经
 发生的物理动作。连接或状态异常需要先确认控制器状态再开启新会话。
 
-首版执行入口要求逐步 reward。Replay 支持 pending 记录与显式 `finalize`，尚未将
-episode 结束后统一奖励/审核的机器人协议接入 EnvSession；这种任务不能先提交临时
-reward 再覆盖已经训练的样本。具体控制器和仿真 SDK 适配保留在环境包，本仓库不自造
+执行入口支持 `reward_mode=per_step` 和 `episode`。回合模式先持久化 pending，再由
+适配器的 `finalize_episode` / 可选 `poll_finalizations` 返回最终标签；不能先训练临时
+reward 再覆盖。具体控制器和仿真 SDK 适配保留在环境包，本仓库不自造
 硬件端点或导入本地调试脚本。
 
 ## 保存、恢复和部署

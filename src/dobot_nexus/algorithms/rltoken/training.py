@@ -51,9 +51,9 @@ def validate_training(config):
         raise ValueError(
             "environment.target must select a Robot Agent adapter using module:object."
         )
-    if env.get("reward_mode") != "per_step" or type(env.get("bootstrap_truncation")) is not bool:
+    if env.get("reward_mode") not in {"per_step", "episode"} or type(env.get("bootstrap_truncation")) is not bool:
         raise ValueError(
-            "Declare environment.reward_mode=per_step and boolean bootstrap_truncation."
+            "Declare environment.reward_mode=per_step or episode and boolean bootstrap_truncation."
         )
     for name in ("max_chunks", "min_actor_updates"):
         if type(env.get(name)) is not int or env[name] <= 0:
