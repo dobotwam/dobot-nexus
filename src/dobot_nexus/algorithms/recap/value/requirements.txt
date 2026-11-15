@@ -1,0 +1,6 @@
+# RECAP jobs: shared Fusion dependencies plus RECAP dataset readers.
+-r ../../../modules/value/fusion/requirements.txt
+pyarrow
+datasets
+lerobot>=0.3,<0.5
+tensorboard>=2.14
