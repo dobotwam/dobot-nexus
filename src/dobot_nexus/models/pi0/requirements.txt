@@ -1,0 +1,10 @@
+# Install this file inside the dedicated Pi0 virtual environment.
+-r ../../../../requirements.txt
+
+# Pi0 uses its self-contained operator leaf plus a local LeRobot pipeline.
+sentencepiece
+einops
+Pillow
+datasets
+torchvision
+lerobot>=0.3,<0.5
