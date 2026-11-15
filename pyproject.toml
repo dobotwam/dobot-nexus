@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dobot-nexus"
+version = "1.0.0"
+description = "Algorithm-facing VLA training and inference mapping layer."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "PyYAML>=6.0",
+  "torch>=2.10,<2.11",
+]
+
+[project.urls]
+Repository = "https://github.com/fengzx99/dobot-nexus"
+Issues = "https://github.com/fengzx99/dobot-nexus/issues"
+Documentation = "https://github.com/fengzx99/dobot-nexus/tree/main/docs"
+
+[project.optional-dependencies]
+accelerate = ["accelerate>=1.14,<2"]
+tracking = ["wandb>=0.17"]
+tensorboard = ["tensorboard>=2.14"]
+pi05 = [
+  "tensorboard>=2.14",
+  "datasets",
+  "sentencepiece",
+  "einops",
+  "Pillow",
+  "pyarrow",
+  "safetensors",
+  "torchvision",
+  "lerobot>=0.3,<0.5",
+]
+legacy-data = ["pandas", "pyarrow", "imageio", "opencv-python-headless", "tqdm"]
+pi0 = [
+  "tensorboard>=2.14",
+  "datasets",
+  "sentencepiece",
+  "einops",
+  "Pillow",
+  "pyarrow",
+  "safetensors",
+  "torchvision",
+  "lerobot>=0.3,<0.5",
+]
+serve = ["fastapi>=0.110", "uvicorn>=0.29"]
+websocket = ["msgpack>=1.0.5", "websockets>=15,<16"]
+# Retained installation alias for existing deployment environments.
+openpi = ["msgpack>=1.0.5", "websockets>=15,<16"]
+dev = ["ruff>=0.5", "pytest>=8.0"]
+
+[project.scripts]
+dobot-nexus = "dobot_nexus.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false
+
+[tool.setuptools.package-data]
+"dobot_nexus.models.pi0" = ["assets/*.model"]
+"dobot_nexus.models.pi05" = ["assets/*.model"]
+"dobot_nexus.models.pi05.deploy.profiles" = ["*.yaml"]
+"dobot_nexus.models.pi0.training.vendor.rlinf_core" = ["LICENSE", "NOTICE.md"]
+"dobot_nexus.models.pi05.torch_core" = ["LICENSE", "NOTICE.md"]
+"dobot_nexus.algorithms.recap" = ["NOTICE.md"]
+"dobot_nexus.algorithms.recap.value" = ["requirements.txt", "NOTICE.md"]
+"dobot_nexus.modules.value" = ["README.md"]
+"dobot_nexus.modules.value.fusion" = ["requirements.txt", "NOTICE.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Model-owned Apache-2.0 operators; Pi0.5 local adaptations are listed in NOTICE.md.
+"src/dobot_nexus/models/pi0/training/vendor/rlinf_core/*.py" = ["B007"]
+"src/dobot_nexus/models/pi05/torch_core/*.py" = ["B007"]

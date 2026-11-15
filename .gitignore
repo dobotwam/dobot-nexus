@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+.venv/
+.venvs/
+dist/
+build/
+*.egg-info/
+runs/
+*.log
+.DS_Store
+
+# Local code architecture analysis and review notes
+/analysis_review/
+local_script/
+
+# Local connections, credentials, model weights, and training artifacts.
+.remote-dev.json
+.remote-dev/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.safetensors
+*.pt
+*.pth
+*.ckpt

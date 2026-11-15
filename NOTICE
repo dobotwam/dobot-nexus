@@ -1,0 +1,21 @@
+Dobot Nexus
+Copyright 2026 Dobot contributors.
+
+Dobot Nexus is distributed under the Apache License, Version 2.0.
+
+The Dobot Nexus RECAP implementation is Copyright 2026 Dobot.
+Its module-level notice is in src/dobot_nexus/algorithms/recap/NOTICE.md.
+
+Pi0 and Pi0.5 include model-owned adaptations of Apache-2.0 operator sources.
+Their LICENSE and NOTICE.md files identify the original sources and adaptations:
+- src/dobot_nexus/models/pi0/training/vendor/rlinf_core/
+- src/dobot_nexus/models/pi05/torch_core/
+
+The Fusion implementation and RECAP Value orchestration originate from Dobot's
+internal open-source Dobot-RECAP code and are included under this repository's
+Apache-2.0 license. Source details and the retained snapshot digest are recorded in:
+- src/dobot_nexus/modules/value/fusion/NOTICE.md
+- src/dobot_nexus/algorithms/recap/value/NOTICE.md
+
+Downloaded model weights, datasets, and third-party Python dependencies are
+separate works subject to their own licenses and terms.

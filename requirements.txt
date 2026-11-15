@@ -1,0 +1,15 @@
+# Shared runtime used by every model environment.
+#
+# Keep model-specific packages (especially transformers/tokenizers) out of this
+# file so each model environment can evolve without coupling its dependency graph.
+torch>=2.10,<2.11
+numpy>=1.24
+PyYAML>=6.0
+accelerate>=1.14,<2
+pandas
+pyarrow
+imageio
+opencv-python-headless
+safetensors
+tqdm
+tensorboard>=2.14
