@@ -1,0 +1,10 @@
+# RECAP USB recipe; use the shared data_processing.convert entry point.
+fps: 20  # Reference index clock. Does NOT change the physical recording rate.
+image_size: 224
+top_roi_xywh: [145, 30, 400, 400]
+require_success: true
+sources:
+  - path: /path/to/recorded/episodes
+    task: "Left arm fixes the socket in place; right arm inserts the plug into the socket."
+    # Omit success/is_human to read recorder metadata. Historical recordings may
+    # select one PKL per entry and provide an audited success: true/false here.

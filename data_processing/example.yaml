@@ -1,0 +1,21 @@
+# Run from repository root: python -m data_processing.convert --config ... --output ...
+fps: 20  # Index clock only; does not resample the physical recording rate.
+image_size: 224
+top_roi_xywh: null  # Full image; set the ROI to match the robot deployment.
+require_success: false  # BC permits unknown outcomes; RECAP rollouts should use true.
+sources:
+  - path: /path/to/recorded/episodes
+    task: "Describe the task performed in these recordings."
+    # success: true  # Only supply an audited outcome when recorder metadata is missing.
+    # is_human: true  # Only supply when the whole source is known to be human-operated.
+
+# Optional recorded scalar fields for RLT or other downstream consumers.
+# Rename each source to the actual PKL key. Missing optional values stay null.
+# Required fields fail conversion when absent; no reward/termination is inferred.
+# extra_fields:
+#   reward: {source: reward, dtype: float32, required: true}
+#   terminated: {source: terminated, dtype: bool, required: true}
+#   truncated: {source: truncated, dtype: bool, required: true}
+#   behavior_log_prob: {source: log_prob, dtype: float32}
+#   policy_version: {source: policy_version, dtype: string}
+#   chunk_step: {source: chunk_step, dtype: int64}
