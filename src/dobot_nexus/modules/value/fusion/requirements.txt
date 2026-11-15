@@ -1,0 +1,8 @@
+# Optional dependencies for the shared Fusion value estimator.
+transformers==4.53.2
+tokenizers>=0.21,<0.22
+torch>=2.3
+torchvision
+sentencepiece
+Pillow
+safetensors
