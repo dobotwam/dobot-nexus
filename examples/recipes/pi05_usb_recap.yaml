@@ -1,0 +1,17 @@
+# USB RECAP reference: seven ranks, global batch 672. Reuse the BC rollout statistics.
+extends: ../configs/train/pi05_recap.yaml
+exp:
+  name: pi05_usb_recap
+data:
+  format_version: v2.1
+  batch_size: 96
+  global_batch_size: 672
+  num_workers: 32
+  prefetch_factor: 2
+  default_prompt: Insert the USB plug into the port.
+scheduler:
+  warmup_steps: 500
+  warmup_initial_ratio: 0.001996007984031936
+train:
+  ema_decay: 0.99
+  log_every: 100

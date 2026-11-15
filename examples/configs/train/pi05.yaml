@@ -1,0 +1,112 @@
+schema_version: 1
+task: train
+algorithm: bc
+
+exp:
+  name: pi05_bc
+  output_dir: runs
+  seed: 42
+  auto_suffix: false
+
+model:
+  name: pi05
+  target: dobot_nexus.models.pi05.modeling_pi05:Pi05Model
+  checkpoint: ${env:PI05_BASE_CKPT,/path/to/pi05_base}
+  # Match RLinf: persistent parameters and Adam moments stay FP32 while
+  # operator execution uses BF16 mixed precision.
+  precision: bf16
+  parameter_precision: fp32
+  # Public dataset/robot vector widths; configure them independently for each robot.
+  state_dim: 14
+  action_dim: 14
+  # Internal padded width, at least max(state_dim, action_dim).
+  model_action_dim: 32
+  action_horizon: 50
+  image_size: [224, 224]
+
+data:
+  format: lerobot
+  format_version: auto
+  # This is the only task-specific path required for standard LeRobot v2.1/v3 data.
+  # Transformed normalization stats are calculated/cached automatically; the tokenizer is built in.
+  path: ${env:VLA_DATASET_PATH,/path/to/lerobot_dataset}
+  batch_size: 64  # Per process; global batch = batch_size * world_size * grad_accum_steps.
+  num_workers: 8
+  fps: null
+  tolerance_s: 1.0e-4
+
+  default_prompt: ""
+  field_mapping:
+    # Public camera names -> LeRobot feature names.
+    images:
+      base: observation.images.top_camera
+      left_wrist: observation.images.left_camera
+      right_wrist: observation.images.right_camera
+    state: observation.state
+    action: action
+    language: task
+  transforms:
+    action:
+      # Preserve the action semantics stored in the dataset. Robot-specific delta
+      # transforms belong in an example; matching statistics are generated automatically.
+      type: absolute
+
+runtime:
+  launcher: auto  # One process: local; multiple processes: Accelerate.
+  device: auto
+  # Must match model.precision. FSDP, rather than global AMP autocast, casts
+  # parameters to BF16 only while operators execute.
+  precision: bf16
+  fsdp:
+    enabled: auto  # Enable FSDP only for multi-process training.
+    version: 2
+    # FULL_SHARD shards parameters, gradients, and Adam states across ranks.
+    sharding_strategy: full_shard
+    auto_wrap_policy: transformer_based_wrap
+    transformer_layer_cls_to_wrap:
+      - Block
+      - Encoder1DBlock
+    param_dtype: bf16
+    reduce_dtype: fp32
+    buffer_dtype: fp32
+    # Retained for an explicit version=1 override; FSDP2 preserves parameter
+    # groups through joint prepare and ignores FSDP1-specific controls.
+    use_orig_params: true
+    sync_module_states: true
+    cpu_offload: false
+    backward_prefetch: backward_pre
+    limit_all_gathers: true
+    forward_prefetch: false
+
+optim:
+  name: adamw
+  lr: 2.5e-5
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 1.0e-10
+
+scheduler:
+  name: warmup_cosine
+  warmup_steps: 1000
+  total_steps: 20000
+  min_lr_ratio: 0.1
+
+train:
+  max_steps: 20000
+  gradient_checkpointing: true
+  grad_accum_steps: 1
+  grad_clip_norm: 1.0
+  log_every: 10
+  save_every: 2000
+  resume_from: null
+  resume_limit: 2
+
+tracking:
+  tensorboard:
+    enabled: true
+    flush_secs: 10
+    max_queue: 10
+  wandb:
+    enabled: false
+    # When both are enabled, W&B syncs TensorBoard events by default.
+    # Set sync_tensorboard: false to record through both SDKs independently.

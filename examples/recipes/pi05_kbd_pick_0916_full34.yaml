@@ -1,0 +1,33 @@
+# KBD pick task: 34 public dimensions, padded to a 64-D operator boundary.
+extends: ../configs/train/pi05.yaml
+
+exp:
+  name: pi05_kbd_pick_0916_full34
+
+model:
+  state_dim: 34
+  action_dim: 34
+  model_action_dim: 64
+
+data:
+  path: ${env:VLA_DATASET_PATH,/path/to/kbd_pick_0916_full34}
+  batch_size: 8
+  num_workers: 4
+  default_prompt: "pick up the black part and place it into the fixture."
+  field_mapping:
+    images:
+      base: observation.images.head
+      left_wrist: observation.images.left_wrist
+      right_wrist: observation.images.right_wrist
+
+runtime:
+  distributed_timeout_seconds: 7200
+
+tracking:
+  wandb:
+    enabled: false
+    project: ${env:WANDB_PROJECT,dobot-nexus}
+    entity: ${env:WANDB_ENTITY,}
+    group: ${env:WANDB_GROUP,kbd_pick_0916}
+    mode: ${env:WANDB_MODE,offline}
+    tags: [pi05, kbd, 34d, three-camera]

@@ -1,0 +1,25 @@
+# Button Memory reference: four ranks x 16 = 64, 1990 optimizer steps.
+# Requires the prepared training split, train-only quantile stats and matching history cache.
+# This reference uses absolute actions; the separate button BC delta example is not an ablation baseline.
+extends: ../configs/train/pi05_memory.yaml
+exp:
+  name: pi05_memory_button
+  output_dir: runs/memory
+data:
+  format_version: v2.1
+  path: ${env:VLA_DATASET_PATH,/path/to/button_train_split}
+  global_batch_size: 64
+  drop_last: false
+  prefetch_factor: 2
+  fps: 30
+  norm_stats_path: ${env:MEMORY_NORM_STATS,/path/to/button_train_norm_stats.json}
+  memory_cache_episodes: 32
+scheduler:
+  warmup_steps: 50
+  warmup_initial_ratio: 0.001996007984031936
+  total_steps: 1990
+train:
+  max_steps: 1990
+  ema_decay: 0.99
+  save_every: 995
+  resume_limit: 1

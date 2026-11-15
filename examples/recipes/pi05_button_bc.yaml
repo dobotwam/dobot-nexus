@@ -1,0 +1,30 @@
+# Button BC example: joint deltas, absolute grippers. Two-rank reference launch.
+extends: ../configs/train/pi05.yaml
+exp:
+  name: pi05_button_bc
+data:
+  path: ${env:VLA_DATASET_PATH,/path/to/press_the_yellow_button}
+  default_prompt: Press the yellow button.
+  transforms:
+    action:
+      type: delta
+      delta_mask:
+      - true
+      - true
+      - true
+      - true
+      - true
+      - true
+      - false
+      - true
+      - true
+      - true
+      - true
+      - true
+      - true
+      - false
+scheduler:
+  total_steps: 10000
+train:
+  max_steps: 10000
+  save_every: 4000

@@ -1,0 +1,71 @@
+# Independent value job. All assets are explicit local paths; no downloads.
+# Set intervention_field: null when the source has no known human/model labels.
+# Final success does not imply SFT or an all-positive advantage label.
+# Training reference: Dobot-RECAP logs/run_usb_plug_fusion_state_20k_cuda0.sh.
+recap_schema_version: 2
+recipe: dobot_acp_v1
+data:
+  path: ${env:VLA_DATASET_PATH,/path/to/lerobot_dataset}
+  dataset_id: usb_insert_v1
+  format_version: v2.1
+  dataset_type: rollout
+  intervention_field: is_human
+  outcome:
+    kind: episode_jsonl
+    path: ${env:RECAP_OUTCOMES,/path/to/outcomes.jsonl}
+  field_mapping:
+    images:
+      base: observation.images.top_camera
+      left_wrist: observation.images.left_camera
+      right_wrist: observation.images.right_camera
+    state: observation.state
+    action: action
+    language: task
+  fps: null
+  tolerance_s: 0.0001
+annotations:
+  output_dir: ${env:RECAP_ANNOTATIONS,/path/to/recap_annotations}
+returns:
+  c_fail_coef: 1.0
+value:
+  siglip_path: ${env:RECAP_SIGLIP_PATH,/path/to/siglip-so400m-patch14-384}
+  gemma3_path: ${env:RECAP_GEMMA3_PATH,/path/to/gemma-3-270m}
+  tokenizer_path: ${env:RECAP_GEMMA3_PATH,/path/to/gemma-3-270m}
+  include_state: true
+  freeze_vision_backbone: false
+  freeze_language_backbone: false
+  backbone_precision: bfloat16
+train:
+  output_dir: ${env:RECAP_VALUE_OUTPUT,/path/to/value_run}
+  device: cuda:0
+  seed: 0
+  batch_size: 56
+  grad_accum_steps: 1
+  max_steps: 20000
+  save_every: 2000
+  log_every: 10
+  learning_rate: 1.0e-04
+  weight_decay: 1.0e-04
+  warmup_steps: 1000
+  stable_steps: null
+  decay_steps: 19000
+  decay_lr: 2.5e-06
+  val_ratio: 0.05
+  val_episodes: 8
+  resume_from: null
+  gradient_checkpointing: false
+  num_workers: 4
+labeling:
+  device: cuda:0
+  batch_size: 16
+  num_workers: 0
+advantage:
+  n_step: 50
+  positive_ratio: 0.3
+  force_intervention_positive: true
+
+tracking:
+  tensorboard:
+    enabled: true
+    flush_secs: 10
+    max_queue: 10

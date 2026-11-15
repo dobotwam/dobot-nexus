@@ -1,0 +1,16 @@
+# Generic RECAP policy training. Supply BC statistics and advantage annotations.
+# USB reference batch/schedule settings live in examples/recipes/pi05_usb_recap.yaml.
+extends: pi05.yaml
+exp:
+  name: pi05_recap
+model:
+  target: dobot_nexus.models.pi05.modeling_recap:Pi05ReCapModel
+  recap:
+    schema_version: 2
+    recipe: dobot_acp_v1
+    unconditional_prob: 0.3
+data:
+  normalization: quantile
+  norm_stats_path: ${env:RECAP_BC_NORM_STATS,/path/to/bc/deployment/assets/norm_stats.json}
+  recap:
+    annotations: ${env:RECAP_ANNOTATIONS,/path/to/recap_annotations}

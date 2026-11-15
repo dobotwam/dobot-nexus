@@ -1,0 +1,32 @@
+schema_version: 1
+task: infer
+
+exp:
+  name: pi0_infer
+  output_dir: runs
+  seed: 42
+
+model:
+  name: pi0
+  target: dobot_nexus.models.pi0.modeling_pi0:Pi0Model
+  # The Artifact restores weights, data mapping, normalization, and tokenizer.
+  artifact: ${env:PI0_ARTIFACT,runs/pi0_bc/checkpoints/latest_deployment.txt}
+  checkpoint: null
+  precision: bf16
+  state_dim: 14
+  action_dim: 14
+  action_horizon: 50
+  image_size: [224, 224]
+
+runtime:
+  device: auto
+
+inference:
+  num_steps: 10
+  execute_steps: 50
+  seed: 42
+  warmup: false
+
+server:
+  host: 127.0.0.1
+  port: 12023

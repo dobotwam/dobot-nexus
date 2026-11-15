@@ -1,0 +1,92 @@
+schema_version: 1
+task: train
+algorithm: bc
+
+exp:
+  name: pi0_bc
+  output_dir: runs
+  seed: 42
+  auto_suffix: false
+
+model:
+  name: pi0
+  target: dobot_nexus.models.pi0.modeling_pi0:Pi0Model
+  checkpoint: ${env:PI0_BASE_CKPT,/path/to/pi0_base}
+  # Persistent parameters and Adam moments remain FP32; operators execute in BF16.
+  precision: bf16
+  parameter_precision: fp32
+  state_dim: 14
+  action_dim: 14
+  action_horizon: 50
+  image_size: [224, 224]
+
+data:
+  format: lerobot
+  format_version: auto
+  path: ${env:VLA_DATASET_PATH,/path/to/lerobot_dataset}
+  batch_size: 1  # Per process; global batch = batch_size * world_size * grad_accum_steps.
+  num_workers: 0
+  field_mapping:
+    images:
+      base: observation.images.top_camera
+      left_wrist: observation.images.left_camera
+      right_wrist: observation.images.right_camera
+    state: observation.state
+    action: action
+    language: task
+  transforms:
+    action:
+      type: absolute
+
+runtime:
+  launcher: auto  # One process: local; multiple processes: Accelerate.
+  device: auto
+  precision: bf16
+  fsdp:
+    enabled: auto  # Enable FSDP only for multi-process training.
+    version: 2
+    sharding_strategy: full_shard
+    auto_wrap_policy: transformer_based_wrap
+    transformer_layer_cls_to_wrap:
+      - Block
+      - Encoder1DBlock
+    param_dtype: bf16
+    reduce_dtype: fp32
+    buffer_dtype: fp32
+    use_orig_params: true
+    sync_module_states: true
+    cpu_offload: false
+    backward_prefetch: backward_pre
+    limit_all_gathers: true
+    forward_prefetch: false
+
+optim:
+  name: adamw
+  lr: 1.0e-5
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.01
+
+scheduler:
+  name: warmup_cosine
+  warmup_steps: 1000
+  total_steps: 50000
+  min_lr_ratio: 0.1
+
+train:
+  max_steps: 50000
+  gradient_checkpointing: true
+  grad_accum_steps: 1
+  grad_clip_norm: 1.0
+  log_every: 10
+  save_every: 1000
+  resume_from: null
+  resume_limit: 2
+
+tracking:
+  tensorboard:
+    enabled: true
+    flush_secs: 10
+    max_queue: 10
+  wandb:
+    enabled: false
