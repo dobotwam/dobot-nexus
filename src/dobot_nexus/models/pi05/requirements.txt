@@ -1,0 +1,10 @@
+# Install this file inside the dedicated Pi0.5 virtual environment.
+-r ../../../../requirements.txt
+
+# Pi0.5 shares its local torch_core between training and inference.
+sentencepiece
+einops
+Pillow
+datasets
+torchvision
+lerobot>=0.3,<0.5

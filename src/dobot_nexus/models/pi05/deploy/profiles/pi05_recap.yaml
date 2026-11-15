@@ -1,0 +1,37 @@
+# Positive/negative/base conditioning for Torch inference; full CFG is not supported.
+schema_version: 1
+task: infer
+exp:
+  name: pi05_recap_infer
+  output_dir: runs
+  seed: 42
+model:
+  name: pi05
+  target: dobot_nexus.models.pi05.modeling_recap:Pi05ReCapModel
+  artifact: ${env:RECAP_ARTIFACT,runs/pi05_recap/checkpoints/latest.txt}
+  checkpoint: null
+  precision: bf16
+  # Public dimensions are restored from the Artifact.
+  state_dim: null
+  action_dim: null
+  action_horizon: null
+  inference_backend: torch
+runtime:
+  device: auto
+  # Same legacy action-expert compilation and sampler graph as BC.
+  # For CPU inference set compile=false and cuda_graph=false.
+  compile: true
+  compile_mode: legacy
+  compile_preserve_precision: true
+  cuda_graph: true
+  cuda_graph_max_entries: 2
+inference:
+  num_steps: 10
+  execute_steps: 8
+  seed: 42
+  warmup: true
+  recap:
+    condition: base  # Match reference rollout; select positive explicitly for ACP evaluation.
+server:
+  host: 127.0.0.1
+  port: 12021
