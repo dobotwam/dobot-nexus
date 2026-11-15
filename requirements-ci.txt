@@ -1,0 +1,32 @@
+# CPU contract-test environment: Python 3.11, Linux.
+# Install torch/torchvision CPU wheels first, then use this file as constraints.
+torch==2.10.0
+torchvision==0.25.0
+numpy==2.2.6
+PyYAML==6.0.3
+accelerate==1.14.0
+pandas==3.0.5
+pyarrow==25.0.1
+Pillow==12.3.0
+imageio==2.37.4
+opencv-python-headless==4.12.0.88
+safetensors==0.8.0
+tqdm==4.70.0
+sentencepiece==0.2.2
+einops==0.8.2
+msgpack==1.2.2
+websockets==15.0.1
+fastapi==0.141.1
+starlette==1.6.0
+uvicorn==0.52.4
+httpx==0.28.1
+setuptools==79.0.1
+wheel==0.48.0
+tensorboard==2.20.0
+# TensorBoard event compatibility and dashboard dependencies.
+protobuf==6.33.6
+tensorboard-data-server==0.7.2
+grpcio==1.85.1
+absl-py==2.5.1
+Markdown==3.11.3
+Werkzeug==3.1.9

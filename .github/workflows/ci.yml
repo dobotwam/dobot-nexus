@@ -1,0 +1,30 @@
+name: CPU contracts and wheel
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: src:.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - name: Install CPU runtime and test dependencies
+        run: |
+          python -m pip install -c requirements-ci.txt torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -c requirements-ci.txt -e '.[accelerate,serve,websocket,tensorboard]' pandas pyarrow Pillow imageio opencv-python-headless safetensors tqdm sentencepiece einops httpx setuptools wheel
+          python -m pip check
+      - name: Compile and test contracts
+        run: |
+          python -m compileall -q src tests scripts examples/pi05_real_robot
+          python -m unittest discover -s tests -v
+      - name: Build and install wheel outside checkout
+        run: python scripts/check_wheel.py
