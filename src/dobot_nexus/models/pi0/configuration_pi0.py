@@ -90,6 +90,12 @@ class Pi0Config:
             torch_compile=bool(config.get("runtime", {}).get("compile", False)),
         )
         result.validate()
+        if (mode == "infer" and result.torch_dtype == torch.float32
+                and result.parameter_torch_dtype != torch.float32):
+            raise ValueError(
+                "Pi0 FP32 inference compute requires model.inference_parameter_precision='fp32' "
+                "(or omit it to follow model.precision)."
+            )
         if mode == "train":
             if result.parameter_torch_dtype != torch.float32:
                 raise ValueError(

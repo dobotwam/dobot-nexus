@@ -208,6 +208,32 @@ class Pi0DirectCoreTest(unittest.TestCase):
         self.assertTrue(np.isfinite(result.actions).all())
         self.assertEqual(model.core_model.proj.weight.dtype, torch.float32)
 
+    def test_inference_precision_combinations_are_validated_before_loading(self) -> None:
+        config = load_config(ROOT / "examples/configs/infer/pi0.yaml", [
+            "model.artifact=null", "model.checkpoint=unused",
+            "model.state_dim=2", "model.action_dim=2", "model.action_horizon=2",
+        ], expected_task="infer")
+        # Training-only precision must not select the inference parameter dtype.
+        config.model.parameter_precision = "fp32"
+        for compute, parameters in (("bf16", "bf16"), ("bf16", "fp32"), ("fp32", "fp32")):
+            with self.subTest(compute=compute, parameters=parameters):
+                config.model.precision = compute
+                config.model.inference_parameter_precision = parameters
+                resolved = Pi0Config.from_config(config, mode="infer")
+                self.assertEqual(resolved.precision, compute)
+                self.assertEqual(resolved.parameter_precision, parameters)
+        for compute in ("bf16", "fp32"):
+            config.model.precision = compute
+            config.model.pop("inference_parameter_precision", None)
+            self.assertEqual(Pi0Config.from_config(config, mode="infer").parameter_precision, compute)
+        for parameters in ("bf16", "float16"):
+            config.model.precision = "float32"
+            config.model.inference_parameter_precision = parameters
+            with self.subTest(parameters=parameters), self.assertRaisesRegex(
+                ValueError, "FP32 inference compute requires"
+            ):
+                Pi0Config.from_config(config, mode="infer")
+
     def test_user_configs_hide_operator_backend_details(self) -> None:
         train = load_config(ROOT / "examples/configs/train/pi0.yaml", expected_task="train")
         infer = load_config(ROOT / "examples/configs/infer/pi0.yaml", expected_task="infer")
