@@ -96,7 +96,9 @@ class Pi0Model(BaseVLAModule):
             generator.manual_seed(int(options.seed))
         noise = options.noise
         if noise is not None:
-            noise = torch.as_tensor(noise, device=parameter.device, dtype=parameter.dtype)
+            # Match the core's generated FP32 noise. Weight storage precision
+            # must not quantize supplied noise or the Euler integration state.
+            noise = torch.as_tensor(noise, device=parameter.device, dtype=torch.float32)
             if noise.ndim == 2:
                 noise = noise[None]
             expected_noise = (

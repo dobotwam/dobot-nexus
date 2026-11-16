@@ -133,6 +133,48 @@ def _model_config(root: Path, checkpoint: Path, stats: Path, tokenizer: Path) ->
 
 
 class Pi0DirectCoreTest(unittest.TestCase):
+    def test_supplied_noise_preserves_fp32_independently_of_parameter_dtype(self) -> None:
+        class NoiseCore(torch.nn.Module):
+            def __init__(self, dtype):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.ones(1, dtype=dtype))
+
+            def sample_actions(self, observation, *, noise, **kwargs):
+                return noise
+
+        observation = ObservationBatch.from_value({
+            "images": {"base": np.zeros((2, 2, 3), dtype=np.uint8)},
+            "state": [0.0, 0.0], "prompt": "pick",
+        })
+        noise = np.random.default_rng(42).standard_normal((2, 32)).astype(np.float32)
+        config = load_config(ROOT / "examples/configs/infer/pi0.yaml", [
+            "model.artifact=null", "model.checkpoint=unused",
+            "model.state_dim=2", "model.action_dim=2", "model.action_horizon=2",
+        ], expected_task="infer")
+        for dtype in (torch.bfloat16, torch.float32):
+            with self.subTest(parameter_dtype=dtype):
+                model = Pi0Model.__new__(Pi0Model)
+                torch.nn.Module.__init__(model)
+                model.mode = "infer"
+                model.core_model = NoiseCore(dtype)
+                model.pi0_config = Pi0Config.from_config(config, mode="infer")
+                received = []
+
+                def decode(actions, aux):
+                    received.append(actions)
+                    return PolicyOutput(actions[:, :, :2].float().numpy())
+
+                model.adapter = SimpleNamespace(
+                    encode_observation=lambda obs: obs,
+                    move_encoded=lambda obs, device: SimpleNamespace(
+                        observation=obs, raw_state=obs.state),
+                    decode_actions=decode,
+                )
+                for value in (noise, noise[None]):
+                    model.predict_action_chunk(observation, SamplingOptions(noise=value, num_steps=1))
+                    self.assertEqual(received[-1].dtype, torch.float32)
+                    np.testing.assert_array_equal(received[-1].numpy(), noise[None])
+
     def test_fp32_inference_parameters_support_bf16_operator_inputs(self) -> None:
         class ProjectionCore(torch.nn.Module):
             def __init__(self):
