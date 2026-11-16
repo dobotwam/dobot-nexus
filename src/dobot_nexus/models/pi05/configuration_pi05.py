@@ -204,6 +204,12 @@ class Pi05Config:
             operator_numerics=operator_numerics,
         )
         result.validate()
+        if (mode == "infer" and result.torch_dtype == torch.float32
+                and result.parameter_torch_dtype != torch.float32):
+            raise ValueError(
+                "Pi0.5 FP32 inference compute requires model.inference_parameter_precision='fp32' "
+                "(or omit it to follow model.precision)."
+            )
         if (mode == "infer"
                 and result.torch_compile and result.torch_compile_mode == "openpi"
                 and result.operator_numerics != "openpi"):
