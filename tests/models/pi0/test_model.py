@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -133,6 +134,65 @@ def _model_config(root: Path, checkpoint: Path, stats: Path, tokenizer: Path) ->
 
 
 class Pi0DirectCoreTest(unittest.TestCase):
+    def test_explicit_projection_casts_keep_fp32_parameters_and_gradients(self):
+        from dobot_nexus.models.pi0.numerics import configure_input_dtype_linears
+
+        core = torch.nn.Sequential(torch.nn.Linear(8, 4))
+        weight = core[0].weight
+        keys = list(core.state_dict())
+        configure_input_dtype_linears(core)
+        self.assertIs(core[0].weight, weight)
+        self.assertEqual(list(core.state_dict()), keys)
+        with torch.autocast('cpu', enabled=False):
+            output = core(torch.randn(2, 8, dtype=torch.bfloat16))
+            self.assertEqual(output.dtype, torch.bfloat16)
+            output.float().square().mean().backward()
+        self.assertEqual(weight.dtype, torch.float32)
+        self.assertEqual(weight.grad.dtype, torch.float32)
+        self.assertTrue(torch.isfinite(weight.grad).all())
+
+    def test_supplied_noise_preserves_fp32_independently_of_parameter_dtype(self) -> None:
+        class NoiseCore(torch.nn.Module):
+            def __init__(self, dtype):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.ones(1, dtype=dtype))
+
+            def sample_actions(self, observation, *, noise, **kwargs):
+                return noise
+
+        observation = ObservationBatch.from_value({
+            "images": {"base": np.zeros((2, 2, 3), dtype=np.uint8)},
+            "state": [0.0, 0.0], "prompt": "pick",
+        })
+        noise = np.random.default_rng(42).standard_normal((2, 32)).astype(np.float32)
+        config = load_config(ROOT / "examples/configs/infer/pi0.yaml", [
+            "model.artifact=null", "model.checkpoint=unused",
+            "model.state_dim=2", "model.action_dim=2", "model.action_horizon=2",
+        ], expected_task="infer")
+        for dtype in (torch.bfloat16, torch.float32):
+            with self.subTest(parameter_dtype=dtype):
+                model = Pi0Model.__new__(Pi0Model)
+                torch.nn.Module.__init__(model)
+                model.mode = "infer"
+                model.core_model = NoiseCore(dtype)
+                model.pi0_config = Pi0Config.from_config(config, mode="infer")
+                received = []
+
+                def decode(actions, aux):
+                    received.append(actions)
+                    return PolicyOutput(actions[:, :, :2].float().numpy())
+
+                model.adapter = SimpleNamespace(
+                    encode_observation=lambda obs: obs,
+                    move_encoded=lambda obs, device: SimpleNamespace(
+                        observation=obs, raw_state=obs.state),
+                    decode_actions=decode,
+                )
+                for value in (noise, noise[None]):
+                    model.predict_action_chunk(observation, SamplingOptions(noise=value, num_steps=1))
+                    self.assertEqual(received[-1].dtype, torch.float32)
+                    np.testing.assert_array_equal(received[-1].numpy(), noise[None])
+
     def test_fp32_inference_parameters_support_bf16_operator_inputs(self) -> None:
         class ProjectionCore(torch.nn.Module):
             def __init__(self):
@@ -165,6 +225,49 @@ class Pi0DirectCoreTest(unittest.TestCase):
         self.assertEqual(result.actions.shape, (1, 2, 2))
         self.assertTrue(np.isfinite(result.actions).all())
         self.assertEqual(model.core_model.proj.weight.dtype, torch.float32)
+
+        seen = []
+        def sample(observation, **kwargs):
+            seen.append(torch.is_autocast_enabled("cpu"))
+            return torch.ones(1, 2, 32)
+        with mock.patch.object(model.core_model, "sample_actions", side_effect=sample):
+            for policy, enabled in (("auto", True), ("off", False)):
+                model.pi0_config = replace(model.pi0_config, autocast=policy)
+                with torch.autocast("cpu", dtype=torch.bfloat16):
+                    model.predict_action_chunk(observation, SamplingOptions(num_steps=1))
+                self.assertEqual(seen[-1], enabled)
+            model.pi0_config = replace(model.pi0_config, autocast="auto")
+            model.to(torch.bfloat16)
+            model.predict_action_chunk(observation, SamplingOptions(num_steps=1))
+            self.assertFalse(seen[-1])
+        config.runtime.autocast = False
+        self.assertFalse(Pi0Config.from_config(config, mode="infer").inference_autocast_enabled)
+
+    def test_inference_precision_combinations_are_validated_before_loading(self) -> None:
+        config = load_config(ROOT / "examples/configs/infer/pi0.yaml", [
+            "model.artifact=null", "model.checkpoint=unused",
+            "model.state_dim=2", "model.action_dim=2", "model.action_horizon=2",
+        ], expected_task="infer")
+        # Training-only precision must not select the inference parameter dtype.
+        config.model.parameter_precision = "fp32"
+        for compute, parameters in (("bf16", "bf16"), ("bf16", "fp32"), ("fp32", "fp32")):
+            with self.subTest(compute=compute, parameters=parameters):
+                config.model.precision = compute
+                config.model.inference_parameter_precision = parameters
+                resolved = Pi0Config.from_config(config, mode="infer")
+                self.assertEqual(resolved.precision, compute)
+                self.assertEqual(resolved.parameter_precision, parameters)
+        for compute in ("bf16", "fp32"):
+            config.model.precision = compute
+            config.model.pop("inference_parameter_precision", None)
+            self.assertEqual(Pi0Config.from_config(config, mode="infer").parameter_precision, compute)
+        for parameters in ("bf16", "float16"):
+            config.model.precision = "float32"
+            config.model.inference_parameter_precision = parameters
+            with self.subTest(parameters=parameters), self.assertRaisesRegex(
+                ValueError, "FP32 inference compute requires"
+            ):
+                Pi0Config.from_config(config, mode="infer")
 
     def test_user_configs_hide_operator_backend_details(self) -> None:
         train = load_config(ROOT / "examples/configs/train/pi0.yaml", expected_task="train")

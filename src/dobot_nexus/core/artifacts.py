@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from dobot_nexus.core.config import save_config, to_plain_dict
+from dobot_nexus.core.config import resolve_autocast, save_config, to_plain_dict
 
 
 def resume_fingerprint(config) -> str:
@@ -20,6 +20,13 @@ def resume_fingerprint(config) -> str:
         model.pop(key, None)
     data = dict(to_plain_dict(config.get("data", {})))
     data.pop("num_workers", None)
+    runtime = dict(to_plain_dict(config.get("runtime", {})))
+    autocast = resolve_autocast(config)
+    if autocast == "auto":
+        # The default preserves pre-option behavior and resume fingerprints.
+        runtime.pop("autocast", None)
+    else:
+        runtime["autocast"] = autocast
     scheduler = dict(to_plain_dict(config.get("scheduler", {})))
     if str(scheduler.get("name", "warmup_cosine")).lower() == "warmup_cosine":
         scheduler.setdefault("total_steps", int(config.train.max_steps))
@@ -29,7 +36,7 @@ def resume_fingerprint(config) -> str:
         "optim": to_plain_dict(config.get("optim", {})),
         "scheduler": scheduler,
         "seed": config.get("exp", {}).get("seed", 0),
-        "runtime": to_plain_dict(config.get("runtime", {})),
+        "runtime": runtime,
         "grad_accum_steps": int(config.get("train", {}).get("grad_accum_steps", 1)),
     }
     if config.get("train", {}).get("ema_decay") is not None:

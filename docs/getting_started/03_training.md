@@ -285,7 +285,6 @@ model:
   action_horizon: 50
   operator_numerics: openpi
   max_token_len: 200
-  inference_parameter_precision: fp32
 data:
   format_version: v2.1
   fps: 20
@@ -318,6 +317,7 @@ YAML
 ```
 
 基础模板提供 BF16 计算、FP32 参数、FSDP2 和 AdamW，学习率为 `2.5e-5`。
+推理参数精度在[推理配置](../precision.md)中单独指定，不从训练 Artifact 自动继承。
 两卡正式训练的有效 batch 为 `32 × 2 × 4 = 256`。本示例先设置 `num_workers: 0`
 以便定位数据读取异常，读取性能调优时可按内存和存储吞吐调整。
 

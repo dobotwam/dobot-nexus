@@ -10,7 +10,7 @@ from typing import Any
 
 import torch
 
-from dobot_nexus.core.config import resolve_training_runtime
+from dobot_nexus.core.config import resolve_autocast, resolve_training_runtime
 from dobot_nexus.training.resume import (
     SEED_POLICY,
     TRAINING_STATE_VERSION,
@@ -269,6 +269,13 @@ class LocalRuntime:
             requested = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(requested)
         self.precision = str(runtime_cfg.get("precision", "fp32")).lower()
+        self.autocast_policy = resolve_autocast(config)
+        self.autocast_enabled = (
+            self.autocast_policy == "auto" and self.device.type == "cuda"
+            and _torch_dtype(self.precision, field="runtime.precision") != torch.float32
+        )
+        _LOGGER.info("Local precision=%s autocast=%s enabled=%s",
+                     self.precision, self.autocast_policy, self.autocast_enabled)
         self.grad_accum_steps = int(config.train.get("grad_accum_steps", 1))
         if self.grad_accum_steps <= 0:
             raise ValueError("train.grad_accum_steps must be positive.")
@@ -308,6 +315,8 @@ class LocalRuntime:
 
     def autocast(self):
         dtype = _torch_dtype(self.precision, field="runtime.precision")
+        if self.autocast_policy == "off":
+            return torch.autocast(device_type=self.device.type, enabled=False)
         if self.device.type != "cuda" or dtype == torch.float32:
             return nullcontext()
         return torch.autocast(device_type="cuda", dtype=dtype)
@@ -419,6 +428,7 @@ class AccelerateRuntime:
                 "runtime.launcher='accelerate' requires `pip install -e '.[accelerate]'`."
             ) from exc
         runtime_cfg = config.runtime
+        self.autocast_policy = resolve_autocast(config)
         precision = str(runtime_cfg.get("precision", "bf16")).lower()
         fsdp_cfg = runtime_cfg.get("fsdp", {})
         self.fsdp_enabled = bool(fsdp_cfg.get("enabled", False))
@@ -438,7 +448,13 @@ class AccelerateRuntime:
         
         # Explicit FSDP MixedPrecision owns the PI operator casts. Keeping
         # Accelerate AMP disabled preserves the FP32 islands inside the model.
-        mixed_precision = "no" if self.fsdp_enabled else _accelerate_precision(precision)
+        mixed_precision = (
+            "no" if self.fsdp_enabled or self.autocast_policy == "off"
+            else _accelerate_precision(precision)
+        )
+        self.autocast_enabled = mixed_precision != "no"
+        _LOGGER.info("Accelerate precision=%s fsdp=%s autocast=%s enabled=%s",
+                     precision, self.fsdp_enabled, self.autocast_policy, self.autocast_enabled)
         accelerator_kwargs = {}
         timeout = runtime_cfg.get("distributed_timeout_seconds")
         if timeout is not None:
@@ -537,6 +553,8 @@ class AccelerateRuntime:
         return self.accelerator.accumulate(model)
 
     def autocast(self):
+        if self.autocast_policy == "off":
+            return torch.autocast(device_type=self.device.type, enabled=False)
         return self.accelerator.autocast()
 
     def backward(self, loss) -> None:

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import torch
 
+from dobot_nexus.core.config import resolve_autocast
+
 _DEFAULT_CAMERAS = {
     "base": "base_0_rgb",
     "left_wrist": "left_wrist_0_rgb",
@@ -46,6 +48,7 @@ class Pi0Config:
     paligemma_variant: str = "gemma_2b"
     action_expert_variant: str = "gemma_300m"
     discrete_state_input: bool = False
+    autocast: str = "auto"
 
     @classmethod
     def from_config(cls, config, *, mode: str) -> Pi0Config:
@@ -77,6 +80,7 @@ class Pi0Config:
             checkpoint=checkpoint,
             precision=compute_precision,
             parameter_precision=parameter_precision,
+            autocast=resolve_autocast(config),
             state_dim=int(model.state_dim),
             action_dim=int(model.action_dim),
             action_horizon=int(model.action_horizon),
@@ -90,6 +94,12 @@ class Pi0Config:
             torch_compile=bool(config.get("runtime", {}).get("compile", False)),
         )
         result.validate()
+        if (mode == "infer" and result.torch_dtype == torch.float32
+                and result.parameter_torch_dtype != torch.float32):
+            raise ValueError(
+                "Pi0 FP32 inference compute requires model.inference_parameter_precision='fp32' "
+                "(or omit it to follow model.precision)."
+            )
         if mode == "train":
             if result.parameter_torch_dtype != torch.float32:
                 raise ValueError(
@@ -104,6 +114,11 @@ class Pi0Config:
                     f"dtype during training, got {compute_precision!r} and {runtime_precision!r}."
                 )
         return result
+
+    @property
+    def inference_autocast_enabled(self) -> bool:
+        return (self.autocast == "auto" and self.parameter_torch_dtype != self.torch_dtype
+                and self.torch_dtype != torch.float32)
 
     @property
     def camera_names(self) -> tuple[str, ...]:

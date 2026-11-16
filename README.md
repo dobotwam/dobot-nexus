@@ -108,6 +108,7 @@ cd dobot-nexus
 | [数据转换参考](data_processing/README.md) | 成败、人工干预、扩展字段和转换配置 |
 | [Pi0.5 训练与部署配置指南](docs/pi05_training.md) | 数据语义、归一化、FSDP、恢复、编译和故障排查 |
 | [Pi0 训练与推理](docs/pi0_training.md) | Pi0 权重、连续状态、维度配置、BC、续训与 Artifact 推理 |
+| [精度参数表](docs/precision.md) | 训练与推理的参数/计算精度、Artifact 恢复、编译与 Memory/Value 边界 |
 | [任务配置样例](examples/recipes/README.md) | USB、按钮、KBD 等已有任务配方 |
 | [Memory 指南](docs/pi05_memory.md) | 历史特征准备、训练和历史服务 |
 | [RECAP / ACP 指南](docs/recap/README.md) | 离线 Value、优势标注和条件策略 |

@@ -57,6 +57,7 @@ runtime:
   # Must match model.precision. FSDP, rather than global AMP autocast, casts
   # parameters to BF16 only while operators execute.
   precision: bf16
+  autocast: auto  # auto: Local/DDP AMP, FSDP explicit casts; "off": disable outer AMP.
   fsdp:
     enabled: auto  # Enable FSDP only for multi-process training.
     version: 2

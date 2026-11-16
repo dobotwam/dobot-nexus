@@ -21,33 +21,56 @@ def _(x, y):
 
 
 @torch.library.custom_op("nexus_pi05_legacy::linear", mutates_args=())
-def linear(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None) -> torch.Tensor:
+def _linear(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None) -> torch.Tensor:
     return F.linear(x, weight, bias)
 
 
-@linear.register_fake
+@_linear.register_fake
 def _(x, weight, bias):
     return F.linear(x, weight, bias)
 
 
 @torch.library.custom_op("nexus_pi05_legacy::matmul", mutates_args=())
-def matmul(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+def _matmul(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     return torch.matmul(x, weight)
 
 
-@matmul.register_fake
+@_matmul.register_fake
 def _(x, weight):
     return torch.matmul(x, weight)
 
 
 @torch.library.custom_op("nexus_pi05_legacy::einsum", mutates_args=())
-def einsum(equation: str, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+def _einsum(equation: str, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return torch.einsum(equation, x, y)
 
 
-@einsum.register_fake
+@_einsum.register_fake
 def _(equation, x, y):
     return torch.einsum(equation, x, y)
+
+
+def _autocast_operand(value):
+    # AOT compilation does not carry the surrounding autocast state into an
+    # opaque custom-op kernel. Keep GEMM input casts outside that boundary so
+    # mixed FP32 parameters / BF16 activations work in eager and compiled code.
+    # Respect disabled regions (notably OpenPiLinear) and FP64's AMP exemption.
+    if (value is not None and value.is_floating_point() and value.dtype != torch.float64
+            and torch.is_autocast_enabled(value.device.type)):
+        return value.to(torch.get_autocast_dtype(value.device.type))
+    return value
+
+
+def linear(x, weight, bias):
+    return _linear(_autocast_operand(x), _autocast_operand(weight), _autocast_operand(bias))
+
+
+def matmul(x, weight):
+    return _matmul(_autocast_operand(x), _autocast_operand(weight))
+
+
+def einsum(equation, x, y):
+    return _einsum(equation, _autocast_operand(x), _autocast_operand(y))
 
 
 @torch.library.custom_op("nexus_pi05_legacy::softmax", mutates_args=())
@@ -116,18 +139,28 @@ def rope(x, *, positions, max_wavelength=10000.0):
 
 
 @torch.library.custom_op("nexus_pi05_legacy::time_embedding", mutates_args=())
-def time_embedding(
-    pos: torch.Tensor, embedding_dim: int, min_period: float = 0.004, max_period: float = 4.0
+def _time_embedding(
+    pos: torch.Tensor, embedding_dim: int, min_period: float = 0.004, max_period: float = 4.0,
+    autocast_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
-    fraction = torch.linspace(0.0, 1.0, embedding_dim // 2, device=pos.device, dtype=torch.float32)
-    period = min_period * (max_period / min_period) ** fraction
-    radians = torch.einsum("i,j->ij", pos.float(), 1.0 / period * 2 * torch.pi)
-    return torch.cat([torch.sin(radians), torch.cos(radians)], dim=-1).to(pos.dtype)
+    # CUDA autocast changes the einsum output before sin/cos, even though its
+    # operands are FP32. Carry that state explicitly across the opaque boundary.
+    with torch.autocast(pos.device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):
+        fraction = torch.linspace(0.0, 1.0, embedding_dim // 2, device=pos.device, dtype=torch.float32)
+        period = min_period * (max_period / min_period) ** fraction
+        radians = torch.einsum("i,j->ij", pos.float(), 1.0 / period * 2 * torch.pi)
+        return torch.cat([torch.sin(radians), torch.cos(radians)], dim=-1).to(pos.dtype)
 
 
-@time_embedding.register_fake
-def _(pos, embedding_dim, min_period=0.004, max_period=4.0):
+@_time_embedding.register_fake
+def _(pos, embedding_dim, min_period=0.004, max_period=4.0, autocast_dtype=None):
     return torch.empty((pos.shape[0], embedding_dim), device=pos.device, dtype=pos.dtype)
+
+
+def time_embedding(pos, embedding_dim, min_period=0.004, max_period=4.0):
+    dtype = (torch.get_autocast_dtype(pos.device.type)
+             if torch.is_autocast_enabled(pos.device.type) else None)
+    return _time_embedding(pos, embedding_dim, min_period, max_period, dtype)
 
 
 @torch.library.custom_op("nexus_pi05_legacy::sub", mutates_args=())
@@ -141,6 +174,11 @@ def _(x, y):
 
 
 def project(module, value):
+    from dobot_nexus.models.pi05.torch_core.numerics import InputDtypeLinear
+
+    if isinstance(module, InputDtypeLinear):
+        return linear(value, module.weight.to(value.dtype),
+                      module.bias.to(value.dtype) if module.bias is not None else None)
     if type(module) is not torch.nn.Linear:
         raise ValueError("Pi0.5 legacy compilation requires unwrapped nn.Linear projections.")
     return linear(value, module.weight, module.bias)

@@ -6,7 +6,9 @@ from unittest import mock
 
 import torch
 
-from dobot_nexus.models.pi05.openpi_torch.engine import TorchPi05Engine, _signature
+from dobot_nexus.models.pi05.openpi_torch.engine import (
+    TorchPi05Engine, _autocast_signature, _signature,
+)
 
 
 @dataclass
@@ -42,6 +44,17 @@ class TinyCore(torch.nn.Module):
 
 
 class TorchEngineTest(unittest.TestCase):
+    def test_graph_precision_signature_tracks_outer_context(self):
+        with torch.autocast("cpu", enabled=False):
+            disabled = _autocast_signature("cpu")
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            bf16 = _autocast_signature("cpu")
+            with torch.autocast("cpu", enabled=False):
+                self.assertEqual(_autocast_signature("cpu"), disabled)
+        with torch.autocast("cpu", dtype=torch.float16):
+            fp16 = _autocast_signature("cpu")
+        self.assertEqual(len({disabled, bf16, fp16}), 3)
+
     def setUp(self):
         self.core = TinyCore().eval()
         self.observation = Observation(torch.ones(1, 3), {"base": torch.zeros(1, 4)})
@@ -126,6 +139,82 @@ class TorchEngineTest(unittest.TestCase):
 
 
 class LegacyOperatorsTest(unittest.TestCase):
+    def test_explicit_projection_preserves_master_gradients_and_compiled_values(self):
+        from dobot_nexus.models.pi05.torch_core.numerics import (
+            OpenPiLinear, configure_input_dtype_linears,
+        )
+        from dobot_nexus.models.pi05.openpi_torch import legacy_ops, openpi_ops
+
+        core = torch.nn.ModuleDict({'ordinary': torch.nn.Linear(8, 4),
+                                   'promoted': OpenPiLinear(8, 4)})
+        parameter = core['ordinary'].weight
+        promoted = core['promoted']
+        keys = list(core.state_dict())
+        configure_input_dtype_linears(core)
+        self.assertIs(core['ordinary'].weight, parameter)
+        self.assertIs(core['promoted'], promoted)
+        self.assertEqual(list(core.state_dict()), keys)
+        value = torch.randn(2, 8, dtype=torch.bfloat16)
+        with torch.autocast('cpu', enabled=False):
+            expected = core['ordinary'](value)
+            self.assertEqual(expected.dtype, torch.bfloat16)
+            expected.float().square().mean().backward()
+            self.assertEqual(parameter.grad.dtype, torch.float32)
+            self.assertTrue(torch.isfinite(parameter.grad).all())
+            for ops in (legacy_ops, openpi_ops):
+                compiled = torch.compile(ops.project, backend='aot_eager', fullgraph=True)
+                with torch.inference_mode():
+                    torch.testing.assert_close(compiled(core['ordinary'], value),
+                                               expected, rtol=0, atol=0)
+
+    def test_compiled_gemms_preserve_autocast_with_fp32_parameters(self):
+        from dobot_nexus.models.pi05.openpi_torch import legacy_ops as ops
+
+        # AOT removes ambient autocast from opaque kernels; backend="eager"
+        # alone does not expose this mixed-parameter inference regression.
+        x, weight, bias = torch.randn(2, 8), torch.randn(5, 8), torch.randn(5)
+        cases = [
+            (ops.linear, torch.nn.functional.linear, (x.bfloat16(), weight, bias)),
+            (ops.linear, torch.nn.functional.linear, (x, weight, None)),
+            (ops.matmul, torch.matmul, (x.bfloat16(), weight.T)),
+            (ops.einsum, torch.einsum, ("ij,kj->ik", x.bfloat16(), weight)),
+        ]
+        for operator, native, args in cases:
+            with self.subTest(operator=operator.__name__, bias=args[-1] is not None):
+                compiled = torch.compile(operator, backend="aot_eager", fullgraph=True)
+                with torch.inference_mode(), torch.autocast("cpu", dtype=torch.bfloat16):
+                    expected = native(*args)
+                    self.assertEqual(expected.dtype, torch.bfloat16)
+                    torch.testing.assert_close(operator(*args), expected, rtol=0, atol=0)
+                    torch.testing.assert_close(compiled(*args), expected, rtol=0, atol=0)
+
+    def test_compiled_openpi_projection_respects_disabled_autocast(self):
+        from dobot_nexus.models.pi05.openpi_torch import openpi_ops as ops
+        from dobot_nexus.models.pi05.torch_core.numerics import OpenPiLinear
+
+        module = OpenPiLinear(8, 16).to(torch.bfloat16)
+        value = torch.randn(2, 4, 8)
+        compiled = torch.compile(ops.project, backend="aot_eager", fullgraph=True)
+        with torch.inference_mode(), torch.autocast("cpu", dtype=torch.bfloat16):
+            expected = module(value)
+            self.assertEqual(expected.dtype, torch.float32)
+            torch.testing.assert_close(compiled(module, value), expected, rtol=0, atol=0)
+
+    def test_compiled_time_embedding_preserves_native_autocast(self):
+        from dobot_nexus.models.pi05.openpi_torch import legacy_ops as ops
+        from dobot_nexus.models.pi05.torch_core.pi0 import posemb_sincos
+
+        compiled = torch.compile(ops.time_embedding, backend="aot_eager", fullgraph=True)
+        for dtype in (torch.float32, torch.bfloat16):
+            pos = torch.tensor([1.0, 2 / 3, 1 / 3], dtype=dtype)
+            for enabled in (False, True):
+                with self.subTest(dtype=dtype, autocast=enabled):
+                    with torch.inference_mode(), torch.autocast(
+                        "cpu", dtype=torch.bfloat16, enabled=enabled,
+                    ):
+                        expected = posemb_sincos(pos, 32)
+                        torch.testing.assert_close(compiled(pos, 32), expected, rtol=0, atol=0)
+
     def test_openpi_boundaries_preserve_promoted_linear_and_reciprocal_sqrt(self):
         from dobot_nexus.models.pi05.openpi_torch import openpi_ops as ops
         from dobot_nexus.models.pi05.torch_core.numerics import OpenPiLinear
@@ -154,15 +243,17 @@ class LegacyOperatorsTest(unittest.TestCase):
         cases = [
             (ops.add, (x, torch.randn(8))),
             (ops.sub, (x, torch.randn(8))),
-            (ops.linear, (x, torch.randn(5, 8), torch.randn(5))),
-            (ops.matmul, (x, torch.randn(8, 5))),
-            (ops.einsum, ("btd,bsd->bts", x, torch.randn(4, 7, 8))),
+            (torch.ops.nexus_pi05_legacy.linear.default, (x, torch.randn(5, 8), torch.randn(5))),
+            (torch.ops.nexus_pi05_legacy.matmul.default, (x, torch.randn(8, 5))),
+            (torch.ops.nexus_pi05_legacy.einsum.default, ("btd,bsd->bts", x, torch.randn(4, 7, 8))),
             (ops.softmax, (x, -1)),
             (ops.gelu_glu, (gate.transpose(0, 1), value.transpose(0, 1))),
             (ops.silu, (x,)),
             (ops.rms_inverse, (x,)),
             (ops.rope_angles, (positions, 8)),
-            (ops.time_embedding, (torch.tensor([1.0, 0.7]), 8)),
+            (torch.ops.nexus_pi05_legacy.time_embedding.default, (torch.tensor([1.0, 0.7]), 8)),
+            (torch.ops.nexus_pi05_legacy.time_embedding.default,
+             (torch.tensor([1.0, 0.7]), 8, 0.004, 4.0, torch.bfloat16)),
         ]
         for op, args in cases:
             with self.subTest(op=op):

@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -92,6 +93,50 @@ class Pi05DirectCoreTest(unittest.TestCase):
         self.assertEqual(output.actions.shape, (1, 2, 2))
         self.assertTrue(np.isfinite(output.actions).all())
         self.assertEqual(model.core_model.proj.weight.dtype, torch.float32)
+
+        # The public inference entry point must override an inherited context.
+        seen = []
+        def sample(observation, **kwargs):
+            seen.append(torch.is_autocast_enabled("cpu"))
+            return torch.ones(1, 2, 32)
+        with mock.patch.object(model.core_model, "sample_actions", side_effect=sample):
+            for policy, enabled in (("auto", True), ("off", False)):
+                model.pi05_config = replace(model.pi05_config, autocast=policy)
+                with torch.autocast("cpu", dtype=torch.bfloat16):
+                    model.predict_action_chunk(observation, SamplingOptions(num_steps=1))
+                self.assertEqual(seen[-1], enabled)
+            model.pi05_config = replace(model.pi05_config, autocast="auto")
+            model.to(torch.bfloat16)
+            model.predict_action_chunk(observation, SamplingOptions(num_steps=1))
+            self.assertFalse(seen[-1])
+        config.runtime.autocast = False  # Unquoted YAML off.
+        self.assertFalse(Pi05Config.from_config(config, mode="infer").inference_autocast_enabled)
+
+    def test_inference_precision_combinations_are_validated_before_loading(self) -> None:
+        config = load_config(ROOT / "examples/configs/infer/pi05.yaml", [
+            "model.artifact=null", "model.checkpoint=unused",
+            "model.state_dim=2", "model.action_dim=2", "model.action_horizon=2",
+        ], expected_task="infer")
+        # Training-only precision must not select the inference parameter dtype.
+        config.model.parameter_precision = "fp32"
+        for compute, parameters in (("bf16", "bf16"), ("bf16", "fp32"), ("fp32", "fp32")):
+            with self.subTest(compute=compute, parameters=parameters):
+                config.model.precision = compute
+                config.model.inference_parameter_precision = parameters
+                resolved = Pi05Config.from_config(config, mode="infer")
+                self.assertEqual(resolved.precision, compute)
+                self.assertEqual(resolved.parameter_precision, parameters)
+        for compute in ("bf16", "fp32"):
+            config.model.precision = compute
+            config.model.pop("inference_parameter_precision", None)
+            self.assertEqual(Pi05Config.from_config(config, mode="infer").parameter_precision, compute)
+        for parameters in ("bf16", "float16"):
+            config.model.precision = "float32"
+            config.model.inference_parameter_precision = parameters
+            with self.subTest(parameters=parameters), self.assertRaisesRegex(
+                ValueError, "FP32 inference compute requires"
+            ):
+                Pi05Config.from_config(config, mode="infer")
 
     def test_user_configs_hide_operator_backend_details(self) -> None:
         train = load_config(
