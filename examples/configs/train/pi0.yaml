@@ -42,6 +42,7 @@ runtime:
   launcher: auto  # One process: local; multiple processes: Accelerate.
   device: auto
   precision: bf16
+  autocast: auto  # auto: Local/DDP AMP, FSDP explicit casts; "off": disable outer AMP.
   fsdp:
     enabled: auto  # Enable FSDP only for multi-process training.
     version: 2

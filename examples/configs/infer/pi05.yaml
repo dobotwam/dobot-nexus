@@ -21,6 +21,7 @@ model:
 
 runtime:
   device: auto
+  autocast: auto  # "off" disables outer AMP; model-owned dtype casts remain active.
   # Legacy baseline on CUDA: native numerical boundaries, compiled action
   # expert, cached timestep modulations and whole-sampler Graph replay.
   # For CPU inference set compile=false and cuda_graph=false.

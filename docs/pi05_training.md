@@ -891,13 +891,19 @@ policy 服务按恢复的维度接收状态并返回动作。`examples/pi05_real
 标准 `examples/configs/infer/pi05.yaml` 使用 `legacy` 数值策略，默认开启编译与 CUDA Graph。
 推理从 Artifact 恢复输入变换和动作反变换。
 
+模型精度由本次推理配置决定：`model.precision` 默认 BF16，
+`model.inference_parameter_precision` 省略时跟随计算精度。
+要保留 FP32 参数，在推理入口显式设置后者为 `fp32`；训练配置中同名字段不会自动继承。
+训练、推理和 Memory/Value 的精度边界见[精度参数表](precision.md)。
+
 | 配置 | 标准推理 YAML 值 | 行为 |
 | --- | --- | --- |
 | `runtime.compile` | `true` | 编译动作专家的一次去噪计算，各采样步复用编译结果 |
 | `runtime.compile_mode` | `legacy` | 保留原生矩阵乘、归约、激活及敏感 FP32 舍入边界，编译其余张量操作；前缀保留原生计算 |
-| `runtime.compile_preserve_precision` | `true` | 保留 BF16/FP16 中间舍入；legacy 模式必须开启 |
+| `runtime.compile_preserve_precision` | `true` | 保留 BF16/FP16 中间舍入；legacy/openpi 模式必须开启 |
 | `runtime.cuda_graph` | `true` | 捕获完整采样过程，后续请求复制新输入并回放；要求 CUDA 和 eval 模式 |
-| `runtime.cuda_graph_max_entries` | `2` | 按输入形状、dtype、采样步数缓存 Graph，超过容量淘汰最久未使用项 |
+| `runtime.cuda_graph_max_entries` | `2` | 按输入形状、dtype、采样步数及 autocast 状态缓存 Graph，超过容量淘汰最久未使用项 |
+| `runtime.autocast` | `auto` | 按参数/计算精度选择外围 AMP；`"off"` 强制关闭，保留模型内部转换；规则见[精度参数表](precision.md) |
 
 可以单独开启 CUDA Graph，保留 eager 算子运算。首次请求包含编译/调优或 Graph 捕获开销，
 应在服务接收请求前 warmup；输入 shape、dtype 或采样步数变化会触发新的捕获。

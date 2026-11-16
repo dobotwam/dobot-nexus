@@ -44,8 +44,14 @@ bash examples/train.sh \
 改为 `--gpus 0`；若要保持全局 batch 4，还需将 `train.grad_accum_steps` 改为 4，
 或把 `data.batch_size` 改为 2。自动选择规则见[统一训练配置](getting_started/03_training.md#单卡和多卡共用配置)。
 训练参数与 Adam 状态保留 FP32，计算默认 BF16；`model.precision` 和 `runtime.precision` 必须一致。
-推理默认将参数加载为计算精度；如需保留 FP32 权重，设置
+推理默认将参数加载为计算精度；如需保留 FP32 权重，在推理配置或命令中设置
 `model.inference_parameter_precision=fp32`，BF16 计算使用自动精度转换。
+该字段不从训练 Artifact 自动继承；全 FP32 推理要求计算和参数均为 FP32。
+完整字段和适用范围见[精度参数表](precision.md)。
+
+推理噪声与 Euler 状态保持 FP32，外部传入 `SamplingOptions.noise` 不随权重降精度。
+`runtime.compile` 默认关闭；启用时仅编译部分算子，不保证与 eager 逐位一致。
+严格数值回归使用 eager，部署前比较同一份观测和噪声下的输出误差。
 
 Pi0 使用均值/标准差归一化。省略 `data.norm_stats_path` 时，训练会按动作分块和
 absolute/delta 设置计算统计量并缓存。自备统计文件必须匹配当前数据和动作语义。

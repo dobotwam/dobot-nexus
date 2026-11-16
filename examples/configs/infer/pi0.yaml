@@ -20,6 +20,7 @@ model:
 
 runtime:
   device: auto
+  autocast: auto  # "off" disables outer AMP; model-owned dtype casts remain active.
 
 inference:
   num_steps: 10
