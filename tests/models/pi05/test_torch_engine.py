@@ -6,7 +6,9 @@ from unittest import mock
 
 import torch
 
-from dobot_nexus.models.pi05.openpi_torch.engine import TorchPi05Engine, _signature
+from dobot_nexus.models.pi05.openpi_torch.engine import (
+    TorchPi05Engine, _autocast_signature, _signature,
+)
 
 
 @dataclass
@@ -42,6 +44,17 @@ class TinyCore(torch.nn.Module):
 
 
 class TorchEngineTest(unittest.TestCase):
+    def test_graph_precision_signature_tracks_outer_context(self):
+        with torch.autocast("cpu", enabled=False):
+            disabled = _autocast_signature("cpu")
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            bf16 = _autocast_signature("cpu")
+            with torch.autocast("cpu", enabled=False):
+                self.assertEqual(_autocast_signature("cpu"), disabled)
+        with torch.autocast("cpu", dtype=torch.float16):
+            fp16 = _autocast_signature("cpu")
+        self.assertEqual(len({disabled, bf16, fp16}), 3)
+
     def setUp(self):
         self.core = TinyCore().eval()
         self.observation = Observation(torch.ones(1, 3), {"base": torch.zeros(1, 4)})
