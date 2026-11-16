@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 
 import torch
@@ -16,6 +17,8 @@ from dobot_nexus.models.pi0.configuration_pi0 import Pi0Config
 from dobot_nexus.models.pi0.data_adapter_pi0 import Pi0DataAdapter
 from dobot_nexus.models.pi0.training import load_core_checkpoint, load_core_source
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class Pi0Model(BaseVLAModule):
     """Self-contained PyTorch Pi0 implementation of the Nexus model contract."""
@@ -27,10 +30,18 @@ class Pi0Model(BaseVLAModule):
         self.root_config = config
         self.mode = mode
         self.pi0_config = Pi0Config.from_config(config, mode=mode)
+        if mode == "infer":
+            _LOGGER.info("Pi0 inference parameters=%s compute=%s autocast=%s enabled=%s",
+                         self.pi0_config.parameter_precision, self.pi0_config.precision,
+                         self.pi0_config.autocast, self.pi0_config.inference_autocast_enabled)
         self.core_source = load_core_source(config, enable_compile=self.pi0_config.torch_compile)
         core_config = self.core_source.Pi0Config(**self.pi0_config.core_kwargs())
         with torch.device("meta"):
             self.core_model = core_config.create()
+            if self.pi0_config.autocast == "off":
+                from dobot_nexus.models.pi0.numerics import configure_input_dtype_linears
+
+                configure_input_dtype_linears(self.core_model)
         self.loaded_checkpoint = load_core_checkpoint(
             self.core_model, self.pi0_config.checkpoint
         )
@@ -125,7 +136,8 @@ class Pi0Model(BaseVLAModule):
         with torch.inference_mode(), torch.autocast(
             device_type=parameter.device.type,
             dtype=compute_dtype,
-            enabled=parameter.dtype != compute_dtype and compute_dtype != torch.float32,
+            enabled=(self.pi0_config.autocast == "auto"
+                     and parameter.dtype != compute_dtype and compute_dtype != torch.float32),
         ):
             actions = self.core_model.sample_actions(
                 encoded.observation,
@@ -155,6 +167,12 @@ class Pi0Model(BaseVLAModule):
     def inference_metadata(self) -> dict:
         return {
             "backend": "torch",
+            "autocast": self.pi0_config.autocast,
+            "autocast_enabled": (
+                self.pi0_config.autocast == "auto"
+                and next(self.core_model.parameters()).dtype != self.pi0_config.torch_dtype
+                and self.pi0_config.torch_dtype != torch.float32
+            ),
             "operator_source": str(self.core_source.core_dir),
             "operator_revision": self.core_source.revision,
             "operator_embedded": self.core_source.embedded,

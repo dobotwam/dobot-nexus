@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -133,6 +134,23 @@ def _model_config(root: Path, checkpoint: Path, stats: Path, tokenizer: Path) ->
 
 
 class Pi0DirectCoreTest(unittest.TestCase):
+    def test_explicit_projection_casts_keep_fp32_parameters_and_gradients(self):
+        from dobot_nexus.models.pi0.numerics import configure_input_dtype_linears
+
+        core = torch.nn.Sequential(torch.nn.Linear(8, 4))
+        weight = core[0].weight
+        keys = list(core.state_dict())
+        configure_input_dtype_linears(core)
+        self.assertIs(core[0].weight, weight)
+        self.assertEqual(list(core.state_dict()), keys)
+        with torch.autocast('cpu', enabled=False):
+            output = core(torch.randn(2, 8, dtype=torch.bfloat16))
+            self.assertEqual(output.dtype, torch.bfloat16)
+            output.float().square().mean().backward()
+        self.assertEqual(weight.dtype, torch.float32)
+        self.assertEqual(weight.grad.dtype, torch.float32)
+        self.assertTrue(torch.isfinite(weight.grad).all())
+
     def test_supplied_noise_preserves_fp32_independently_of_parameter_dtype(self) -> None:
         class NoiseCore(torch.nn.Module):
             def __init__(self, dtype):
@@ -207,6 +225,23 @@ class Pi0DirectCoreTest(unittest.TestCase):
         self.assertEqual(result.actions.shape, (1, 2, 2))
         self.assertTrue(np.isfinite(result.actions).all())
         self.assertEqual(model.core_model.proj.weight.dtype, torch.float32)
+
+        seen = []
+        def sample(observation, **kwargs):
+            seen.append(torch.is_autocast_enabled("cpu"))
+            return torch.ones(1, 2, 32)
+        with mock.patch.object(model.core_model, "sample_actions", side_effect=sample):
+            for policy, enabled in (("auto", True), ("off", False)):
+                model.pi0_config = replace(model.pi0_config, autocast=policy)
+                with torch.autocast("cpu", dtype=torch.bfloat16):
+                    model.predict_action_chunk(observation, SamplingOptions(num_steps=1))
+                self.assertEqual(seen[-1], enabled)
+            model.pi0_config = replace(model.pi0_config, autocast="auto")
+            model.to(torch.bfloat16)
+            model.predict_action_chunk(observation, SamplingOptions(num_steps=1))
+            self.assertFalse(seen[-1])
+        config.runtime.autocast = False
+        self.assertFalse(Pi0Config.from_config(config, mode="infer").inference_autocast_enabled)
 
     def test_inference_precision_combinations_are_validated_before_loading(self) -> None:
         config = load_config(ROOT / "examples/configs/infer/pi0.yaml", [

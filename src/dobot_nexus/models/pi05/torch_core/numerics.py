@@ -9,6 +9,30 @@ from torch import nn
 from torch.nn import functional as F
 
 
+class InputDtypeLinear(nn.Linear):
+    """Explicit compute operands for ordinary projections without outer AMP."""
+
+    def forward(self, value):
+        return F.linear(value, self.weight.to(value.dtype),
+                        self.bias.to(value.dtype) if self.bias is not None else None)
+
+
+def configure_input_dtype_linears(core):
+    """Preserve FP32 master parameters and checkpoint keys in autocast=off mode.
+
+    Only ordinary Linear is replaced. OpenPiLinear retains its dtype promotion,
+    and vision normalization/attention keep their existing explicit casts.
+    """
+    for parent in list(core.modules()):
+        for name, original in list(parent.named_children()):
+            if type(original) is nn.Linear:
+                projection = InputDtypeLinear(original.in_features, original.out_features,
+                    bias=original.bias is not None, device="meta", dtype=original.weight.dtype)
+                projection.weight, projection.bias = original.weight, original.bias
+                projection.train(original.training)
+                setattr(parent, name, projection)
+
+
 class OpenPiLinear(nn.Linear):
     """Preserve NNX Linear's input/parameter dtype promotion inside autocast."""
 

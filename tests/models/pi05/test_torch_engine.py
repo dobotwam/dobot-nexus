@@ -126,6 +126,34 @@ class TorchEngineTest(unittest.TestCase):
 
 
 class LegacyOperatorsTest(unittest.TestCase):
+    def test_explicit_projection_preserves_master_gradients_and_compiled_values(self):
+        from dobot_nexus.models.pi05.torch_core.numerics import (
+            OpenPiLinear, configure_input_dtype_linears,
+        )
+        from dobot_nexus.models.pi05.openpi_torch import legacy_ops, openpi_ops
+
+        core = torch.nn.ModuleDict({'ordinary': torch.nn.Linear(8, 4),
+                                   'promoted': OpenPiLinear(8, 4)})
+        parameter = core['ordinary'].weight
+        promoted = core['promoted']
+        keys = list(core.state_dict())
+        configure_input_dtype_linears(core)
+        self.assertIs(core['ordinary'].weight, parameter)
+        self.assertIs(core['promoted'], promoted)
+        self.assertEqual(list(core.state_dict()), keys)
+        value = torch.randn(2, 8, dtype=torch.bfloat16)
+        with torch.autocast('cpu', enabled=False):
+            expected = core['ordinary'](value)
+            self.assertEqual(expected.dtype, torch.bfloat16)
+            expected.float().square().mean().backward()
+            self.assertEqual(parameter.grad.dtype, torch.float32)
+            self.assertTrue(torch.isfinite(parameter.grad).all())
+            for ops in (legacy_ops, openpi_ops):
+                compiled = torch.compile(ops.project, backend='aot_eager', fullgraph=True)
+                with torch.inference_mode():
+                    torch.testing.assert_close(compiled(core['ordinary'], value),
+                                               expected, rtol=0, atol=0)
+
     def test_compiled_gemms_preserve_autocast_with_fp32_parameters(self):
         from dobot_nexus.models.pi05.openpi_torch import legacy_ops as ops
 

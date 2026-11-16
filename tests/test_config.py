@@ -7,11 +7,29 @@ from pathlib import Path
 from unittest import mock
 
 from dobot_nexus.core.config import (
-    Config, load_config, parse_override, resolve_training_runtime, save_config, validate_config,
+    Config, load_config, parse_override, resolve_autocast, resolve_training_runtime,
+    save_config, validate_config,
 )
 
 
 class ConfigTest(unittest.TestCase):
+    def test_autocast_accepts_yaml_and_cli_off_and_rejects_invalid_policies(self):
+        import yaml
+
+        self.assertEqual(resolve_autocast({}), "auto")
+        for value, expected in (("auto", "auto"), ("off", "off"), (False, "off")):
+            self.assertEqual(resolve_autocast({"runtime": {"autocast": value}}), expected)
+        self.assertEqual(resolve_autocast(yaml.safe_load("runtime: {autocast: off}")), "off")
+        self.assertEqual(resolve_autocast({"runtime": {"autocast": parse_override("off")}}), "off")
+        for value in (True, None, 0, 1, "on", "bf16", [], {}):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "runtime.autocast"):
+                resolve_autocast({"runtime": {"autocast": value}})
+        config = {"schema_version": 1, "task": "infer", "model": {
+            "target": "tests.fakes:DummyVLAModule", "artifact": "unused",
+        }, "runtime": {"autocast": "invalid"}}
+        with self.assertRaisesRegex(ValueError, "runtime.autocast"):
+            validate_config(config)
+
     def test_auto_runtime_uses_process_count_without_mutating_template(self):
         config = Config(runtime=Config(launcher="auto", precision="bf16", fsdp=Config(
             enabled="auto", version=2, param_dtype="bf16",

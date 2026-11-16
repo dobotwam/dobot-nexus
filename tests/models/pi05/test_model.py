@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -92,6 +93,24 @@ class Pi05DirectCoreTest(unittest.TestCase):
         self.assertEqual(output.actions.shape, (1, 2, 2))
         self.assertTrue(np.isfinite(output.actions).all())
         self.assertEqual(model.core_model.proj.weight.dtype, torch.float32)
+
+        # The public inference entry point must override an inherited context.
+        seen = []
+        def sample(observation, **kwargs):
+            seen.append(torch.is_autocast_enabled("cpu"))
+            return torch.ones(1, 2, 32)
+        with mock.patch.object(model.core_model, "sample_actions", side_effect=sample):
+            for policy, enabled in (("auto", True), ("off", False)):
+                model.pi05_config = replace(model.pi05_config, autocast=policy)
+                with torch.autocast("cpu", dtype=torch.bfloat16):
+                    model.predict_action_chunk(observation, SamplingOptions(num_steps=1))
+                self.assertEqual(seen[-1], enabled)
+            model.pi05_config = replace(model.pi05_config, autocast="auto")
+            model.to(torch.bfloat16)
+            model.predict_action_chunk(observation, SamplingOptions(num_steps=1))
+            self.assertFalse(seen[-1])
+        config.runtime.autocast = False  # Unquoted YAML off.
+        self.assertFalse(Pi05Config.from_config(config, mode="infer").inference_autocast_enabled)
 
     def test_inference_precision_combinations_are_validated_before_loading(self) -> None:
         config = load_config(ROOT / "examples/configs/infer/pi05.yaml", [

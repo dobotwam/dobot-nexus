@@ -174,6 +174,11 @@ def _(x, y):
 
 
 def project(module, value):
+    from dobot_nexus.models.pi05.torch_core.numerics import InputDtypeLinear
+
+    if isinstance(module, InputDtypeLinear):
+        return linear(value, module.weight.to(value.dtype),
+                      module.bias.to(value.dtype) if module.bias is not None else None)
     if type(module) is not torch.nn.Linear:
         raise ValueError("Pi0.5 legacy compilation requires unwrapped nn.Linear projections.")
     return linear(value, module.weight, module.bias)
