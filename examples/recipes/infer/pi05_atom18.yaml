@@ -1,0 +1,24 @@
+# ATOM 18D deployment. The matching Artifact owns dimensions and normalization.
+extends: ../../configs/infer/pi05.yaml
+exp:
+  name: pi05_atom18_infer
+  output_dir: runs/atom_robot
+model:
+  artifact: ${env:PI05_ARTIFACT,/path/to/atom18/artifact}
+  precision: bf16
+  inference_parameter_precision: bf16
+  state_dim: 18
+  action_dim: 18
+  action_horizon: null
+runtime:
+  device: cuda
+  autocast: auto
+  compile: true
+  compile_mode: legacy
+  compile_preserve_precision: true
+  cuda_graph: true
+inference:
+  num_steps: 10
+server:
+  host: 127.0.0.1
+  port: 8000

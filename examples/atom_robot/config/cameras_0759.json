@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "cameras": [
+    {"name": "top_camera", "serial": "254122304640", "width": 1280, "height": 720, "fps": 15, "warmup_frames": 60},
+    {"name": "left_camera", "serial": "260522272633", "width": 640, "height": 480, "fps": 15, "warmup_frames": 60},
+    {"name": "right_camera", "serial": "260322273894", "width": 640, "height": 480, "fps": 15, "warmup_frames": 60}
+  ]
+}
