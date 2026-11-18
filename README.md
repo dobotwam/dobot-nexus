@@ -95,6 +95,7 @@ cd dobot-nexus
 | 训练 | `examples/train.sh` |
 | 离线推理 / HTTP 服务 | `examples/infer.sh` |
 | Pi0.5 真机 WebSocket 链路 | `examples/pi05_real_robot/` |
+| ATOM D / 18 维双臂叠衣 | [真机部署、Home-start 和完整推理](docs/robots/atom_d_inference.md) |
 
 训练和推理通过 `model.target` 选择模型，并使用同一份 Artifact 配置与数据处理资产。Pi0.5 使用仓库内置 Torch core，Pi0 使用独立的模型算子。
 

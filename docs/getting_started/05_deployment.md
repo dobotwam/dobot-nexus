@@ -6,6 +6,7 @@
 硬件入口为 `start_dobot_dual_arm_14d_server.sh`。
 准备好通过离线推理检查的正式 Artifact，以及机器人项目已验证可用的硬件环境。
 其他机器人应使用匹配其动作维度、字段和控制协议的硬件适配器。
+ATOM D 双臂叠衣的 PC2 单机部署与运行命令见 [ATOM D 推理指南](../robots/atom_d_inference.md)。
 ATOM W + DH 的字段定义见 [24 维本体协议](../robots/atom_dh_24d.md)。
 
 ## 5.1 哪台机器运行哪个进程

@@ -15,6 +15,7 @@ Pi0.5 BC、RECAP 和 Memory 的推理样例默认启用 Torch 局部编译与 CU
 BC/RECAP 使用 `compile_mode=legacy`，`configs/infer/pi05_memory.yaml` 使用 `openpi`。
 Memory 的资源准备、训练和历史服务见 [Memory 操作指南](../docs/pi05_memory.md)。
 CPU 推理配置见 [Pi0.5 部署说明](../docs/pi05_training.md#92-pytorch-推理)。
+ATOM D 的双臂叠衣入口为 `atom_robot/run_atom_d.sh`。权重选择、Home-start 和录制观测回放见 [ATOM D 部署指南](../docs/robots/atom_d_inference.md)。
 
 ```text
 examples/
