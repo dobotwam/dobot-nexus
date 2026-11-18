@@ -1,0 +1,642 @@
+"""Run a short check or a full closed-loop Pi0.5 episode on ATOM D. Defaults to observation only."""
+
+import argparse
+import datetime
+import json
+import os
+import signal
+import sys
+import time
+import xml.etree.ElementTree as ET
+from contextlib import ExitStack
+from pathlib import Path
+
+import numpy as np
+
+from dobot_nexus.inference.transport import msgpack_numpy
+from examples.atom_robot import atom_d_home as home
+from examples.atom_robot.atom_d_policy import policy_session
+from examples.atom_robot.controller_limits import controller_bounds, read_controller_settings
+from examples.atom_robot.core import (
+    STATE_NAMES,
+    ActionChunk,
+    ChunkGate,
+    LoopGuard,
+    actuator_targets,
+    state_vector,
+)
+from examples.atom_robot.lease import atom_d_control_lease
+from examples.atom_robot.sensors import CameraRig, CameraSpec, RealSenseCamera
+
+ROOT = Path(__file__).resolve().parents[2]
+DATA_CONFIG = Path(
+    os.environ.get(
+        "ATOM_D_CAMERA_CONFIG",
+        Path.home()
+        / "ATOM/Embodylink_v1.1.2_stable/Embodylink/usr/bin"
+        / "robotcollectdata/10010/taskconfig/robotconfig.json",
+    )
+).expanduser()
+ARTIFACT = os.environ.get("PI05_ARTIFACT", str(Path.home() / "step_00004000"))
+PERIOD = 0.05
+VALIDATION_FRAMES = 10
+GRIPPER_FORCE_PERCENT = 100
+JOINT_COLUMNS = np.r_[0:7, 8:15, 16:18]
+GRASP_APPROACH_ROWS = 15
+CARRY_REPLAN_ROWS = 16
+DH_GRIP_OBJECT_DROPPED = 3
+
+
+class GraspTracker:
+    """Track closing requests across policy horizons, including staggered two-hand grasps."""
+
+    def __init__(self):
+        self.since = [None, None]
+        self.grasp_checked = [False, False]
+        self.open_intent = [None, None]
+
+    def hand_targets(self, raw, measured):
+        """Resolve the near-binary DH targets, preserving intermediate starting poses."""
+        out = raw.copy()
+        releasing = []
+        for i, value in enumerate(raw):
+            if value >= 0.8:
+                if self.open_intent[i] is False or (
+                    self.open_intent[i] is None and measured[i] < 0.99
+                ):
+                    releasing.append(i)
+                self.open_intent[i] = True
+            elif value <= 0.2:
+                self.open_intent[i] = False
+            if self.open_intent[i] is not None:
+                out[i] = float(self.open_intent[i])
+        return out, releasing
+
+    def observe_targets(self, index, targets):
+        for side, target in enumerate(targets):
+            if target >= 0.5:
+                self.since[side] = None
+                self.grasp_checked[side] = False
+            elif target <= 0.2 and self.since[side] is None:
+                self.since[side] = index
+        pending = [
+            i
+            for i, start in enumerate(self.since)
+            if start is not None and not self.grasp_checked[i]
+        ]
+        if pending and all(index - self.since[i] >= GRASP_APPROACH_ROWS for i in pending):
+            return [i for i, start in enumerate(self.since) if start is not None]
+        return []
+
+
+def wait_for_hand_state(feedback, robot, rig, folder, sides, deadline, *, opening):
+    # PC1 retains the last motor and gripper references, as it does during inference.
+    start = time.monotonic()
+    stable_since = None
+    last_sample = None
+    states = []
+    positions = []
+    dropped_sides = set()
+    while time.monotonic() < min(start + 3.0, deadline):
+        if (folder / "stop").exists():
+            raise InterruptedError("Operator stopped grasp verification")
+        measure(feedback)
+        if robot.has_error():
+            raise RuntimeError("SDK drive or bus fault during grasp verification")
+        rig.snapshot()
+        hands = feedback.messages["rt/hands/state"]
+        states = [hands.left.grip_state.value, hands.right.grip_state.value]
+        positions = [hands.left.realtime_position, hands.right.realtime_position]
+        stamp = feedback.arrivals["rt/hands/state"]
+        if stamp != last_sample and stamp >= start:
+            last_sample = stamp
+            ready = (
+                all(
+                    states[i] in (1, DH_GRIP_OBJECT_DROPPED) and positions[i] >= 0.99 for i in sides
+                )
+                if opening
+                else all(
+                    states[i] in (2, DH_GRIP_OBJECT_DROPPED) and positions[i] <= 0.5 for i in sides
+                )
+            )
+            if ready:
+                dropped_sides.update(i for i in sides if states[i] == DH_GRIP_OBJECT_DROPPED)
+                if stable_since is None:
+                    stable_since = stamp
+                if stamp - stable_since >= (0.15 if opening else 0.4):
+                    return dict(
+                        sides=sides,
+                        wait_s=round(stamp - start, 3),
+                        states=states,
+                        openings=positions,
+                        dropped_sides=sorted(dropped_sides),
+                    )
+            else:
+                stable_since = None
+                dropped_sides.clear()
+        time.sleep(0.01)
+    operation = "opening" if opening else "grasp"
+    raise RuntimeError(
+        f"Unconfirmed {operation}: sides={sides}, states={states}, openings={positions}"
+    )
+
+
+class StereoLeftCamera:
+    def __init__(self, spec):
+        self.spec = spec
+        self.count = 0
+
+    def start(self):
+        import cv2
+
+        cfg = json.loads(DATA_CONFIG.read_text())
+        path = Path(
+            os.environ.get(
+                "ATOM_D_TOP_DEVICE", "/dev/v4l/by-id/usb-DECXIN_DECXIN_Camera_01.00.00-video-index0"
+            )
+        )
+        if path.resolve() != Path("/dev/video" + str(cfg["top_camera_id"])):
+            raise RuntimeError("Top camera differs from the recording configuration")
+        self.cap = cv2.VideoCapture(str(path), cv2.CAP_V4L2)
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.spec.width * 2)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.spec.height)
+        self.cap.set(cv2.CAP_PROP_FPS, self.spec.fps)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if not self.cap.isOpened():
+            raise RuntimeError("Cannot open DECXIN stereo camera")
+
+    def read(self):
+        import cv2
+
+        ok, frame = self.cap.read()
+        t = time.monotonic()
+        if not ok or frame.shape != (self.spec.height, 2 * self.spec.width, 3):
+            raise RuntimeError("Invalid stereo frame")
+        self.count += 1
+        rgb = cv2.cvtColor(frame[:, : self.spec.width], cv2.COLOR_BGR2RGB)
+        return rgb, self.count, t * 1000, t
+
+    def close(self):
+        if hasattr(self, "cap"):
+            self.cap.release()
+
+
+def camera_rig():
+    cfg = json.loads(DATA_CONFIG.read_text())
+    size = cfg["top_camera_resolution"]
+    specs = [CameraSpec("top_camera", "DECXIN", size["w"], size["h"], cfg["top_camera_fps"], 60)]
+    for side in ("left", "right"):
+        specs.append(CameraSpec(side + "_camera", cfg[side + "_hand_camera_sn"], 640, 480, 30, 60))
+    return CameraRig(
+        specs,
+        factory=lambda s: StereoLeftCamera(s) if s.name == "top_camera" else RealSenseCamera(s),
+    )
+
+
+def measure(feedback):
+    q, fsm, hands = feedback.sample(lambda: False)
+    sides = (hands.left, hands.right)
+    if fsm != 2 or any(h.init_result_state.value != 1 for h in sides):
+        states = [(h.init_result_state.value, h.grip_state.value) for h in sides]
+        raise RuntimeError(
+            f"Robot mode or gripper initialization changed: FSM={fsm}, "
+            f"left/right (init, grip)={states}"
+        )
+    motors = feedback.messages["rt/upper/state"].motor_state
+    upper = np.array([m.q for m in motors])
+    dq = np.array([m.dq for m in motors])
+    tau = np.array([m.tau_est for m in motors])
+    if not np.isfinite(np.r_[upper, dq, tau]).all():
+        raise RuntimeError("Invalid upper motor feedback")
+    return state_vector(upper, [h.realtime_position for h in sides]), upper, dq, tau
+
+
+def hardware_limits():
+    params = json.loads((home.DRIVER / "robot_control_dds/controlParams_P2.json").read_text())[:17]
+    names = ("torso_joint",) + STATE_NAMES[:7] + STATE_NAMES[8:15] + STATE_NAMES[16:]
+    if tuple(row["name"] for row in params) != names:
+        raise RuntimeError("Driver joint order changed")
+    tree = ET.parse(home.URDF)
+    limits = [tree.find(f"./joint[@name='{name}']/limit").attrib for name in names]
+    return (
+        np.array([row["kp"] for row in params]),
+        np.array([row["kd"] for row in params]),
+        np.array([float(row["effort"]) for row in limits]),
+        np.array([float(row["velocity"]) for row in limits]),
+    )
+
+
+def infer_actions(ws, state, images):
+    ws.send(
+        msgpack_numpy.packb(
+            {"state": state, "images": images, "prompt": "Fold the T-shirt with both arms."}
+        )
+    )
+    reply = ws.recv(timeout=3)
+    if isinstance(reply, str):
+        raise RuntimeError(reply)
+    return np.asarray(msgpack_numpy.unpackb(reply)["actions"])
+
+
+def predict(ws, feedback, rig, bounds, sequence=1, after=None):
+    images, info = rig.snapshot()
+    while after is not None and min(v["received_monotonic"] for v in info.values()) <= after:
+        if time.monotonic() - after > 0.7:
+            raise RuntimeError("No fresh camera frames after grasp confirmation")
+        time.sleep(0.01)
+        images, info = rig.snapshot()
+    state, upper, _, _ = measure(feedback)
+    stamp = min(data["received_monotonic"] for data in info.values())
+    a = infer_actions(ws, state, images)
+    chunk = ActionChunk.create(sequence, stamp, time.monotonic(), a, horizon=50)
+    ChunkGate().accept(chunk, time.monotonic())
+    points = actuator_targets(chunk.actions, upper, bounds, saturate_joints=True)
+    return chunk, points, state, images, info
+
+
+def save_view(folder, name, rig):
+    save_images(folder / name, rig.snapshot()[0])
+
+
+def save_images(path, images):
+    from PIL import Image
+
+    panel = np.concatenate(
+        [images[key] for key in ("top_camera", "left_camera", "right_camera")], axis=1
+    )
+    Image.fromarray(panel).save(path)
+
+
+def playback(ws, feedback, rig, bounds, robot, limits, folder, report, full, initial_prediction):
+    kp, kd, rated, velocity = limits
+    gate = ChunkGate()
+    repeating = LoopGuard()
+    grasps = GraspTracker()
+    rate = np.minimum(velocity, np.deg2rad(4) / PERIOD)
+    _, q, dq, tau = measure(feedback)
+    last_sent = np.clip(q + (tau + kd * dq) / kp, bounds[:, 0], bounds[:, 1])
+    last_sent[0] = q[0]
+    robot.robot.gripper_force.update(
+        left_force=GRIPPER_FORCE_PERCENT, right_force=GRIPPER_FORCE_PERCENT
+    )
+    report.update(
+        completed_chunks=0,
+        max_rows=1600 if full else VALIDATION_FRAMES,
+        max_wall_seconds=120,
+        gripper_force_percent=GRIPPER_FORCE_PERCENT,
+        gripper_feedback=[],
+        peak_tracking_deg=0.0,
+        grasp_events=[],
+        release_events=[],
+        drop_events=[],
+        executed_rows_by_chunk=[],
+        peak_reference_step_deg=0.0,
+        peak_effort_fraction=0.0,
+        saturated_joint_values=0,
+    )
+    began = time.monotonic()
+    sequence = 0
+    observed_after = None
+    last_dropped = set()
+    while report["rows_sent"] < report["max_rows"]:
+        sequence += 1
+        report["active_chunk"] = sequence
+        report["executed_rows_by_chunk"].append(0)
+        prediction = (
+            initial_prediction
+            if sequence == 1
+            else predict(ws, feedback, rig, bounds, sequence, observed_after)
+        )
+        observed_after = None
+        chunk, points, state, images, _ = prediction
+        np.savez(folder / f"chunk-{sequence:02}.npz", state=state, actions=chunk.actions, **images)
+        if repeating.observe(chunk.actions, state):
+            return "stopped_repeated_predictions"
+        points = points[: report["max_rows"] - report["rows_sent"]]
+        gate.accept(chunk, time.monotonic())
+        for index, row in enumerate(points):
+            report["active_row"] = index
+            hand_targets, releasing = (
+                grasps.hand_targets(row[17:19], state[[7, 15]]) if full else (row[17:19], [])
+            )
+            report["saturated_joint_values"] += int(
+                np.count_nonzero(chunk.actions[index, JOINT_COLUMNS] != row[1:17])
+            )
+            previous = last_sent
+            diff = row[:17] - previous
+            report["peak_reference_step_deg"] = max(
+                report["peak_reference_step_deg"], float(np.rad2deg(max(abs(diff[1:]))))
+            )
+            duration = max(PERIOD, float(np.max(abs(diff[1:]) / rate[1:])))
+            ticks = max(2, int(np.ceil(duration / 0.0125)))
+            tick_period = duration / ticks
+            row_start = time.monotonic()
+            for tick in range(1, ticks + 1):
+                if (folder / "stop").exists():
+                    return "stopped_by_supervisor"
+                if time.monotonic() - began > report["max_wall_seconds"]:
+                    return "wall_time_limit"
+                if tick == 1 and index % 5 == 0:
+                    rig.snapshot()
+                current, actual, _, effort = measure(feedback)
+                if robot.has_error():
+                    raise RuntimeError("ATOM D SDK reports a drive or bus fault")
+                hands = feedback.messages["rt/hands/state"]
+                dropped = {
+                    side
+                    for side in ("left", "right")
+                    if getattr(hands, side).grip_state.value == DH_GRIP_OBJECT_DROPPED
+                }
+                if dropped - last_dropped:
+                    event = dict(
+                        chunk=sequence,
+                        row=report["rows_sent"],
+                        sides=sorted(dropped - last_dropped),
+                        feedback_s=round(feedback.arrivals["rt/hands/state"] - began, 3),
+                    )
+                    report["drop_events"].append(event)
+                    print("GRIPPER_DROP_REPORTED", json.dumps(event), flush=True)
+                last_dropped = dropped
+                command = previous + diff * (tick / ticks)
+                tracking_deg = float(np.rad2deg(np.max(abs(command[1:] - actual[1:]))))
+                report["peak_tracking_deg"] = max(report["peak_tracking_deg"], tracking_deg)
+                report["peak_effort_fraction"] = max(
+                    report["peak_effort_fraction"], float(max(abs(effort) / rated))
+                )
+                if time.monotonic() - (row_start + (tick - 1) * tick_period) >= PERIOD:
+                    raise RuntimeError("Servo scheduling deadline missed")
+                if tick == 1:
+                    hand_command_time = time.monotonic() - began
+                robot.command_joint_state(
+                    command[1:8],
+                    command[8:15],
+                    hand_targets[:1],
+                    hand_targets[1:],
+                    command[15:17],
+                    send_hand=(tick == 1),
+                )
+                last_sent = command
+                if tick == ticks:
+                    report["rows_sent"] += 1
+                    report["executed_rows_by_chunk"][-1] += 1
+                    report["feedback"].append(current.tolist())
+                    report["gripper_feedback"].append(
+                        dict(
+                            command_s=hand_command_time,
+                            feedback_s=feedback.arrivals["rt/hands/state"] - began,
+                            target=hand_targets.tolist(),
+                            policy_target=row[17:19].tolist(),
+                            state=[hands.left.grip_state.value, hands.right.grip_state.value],
+                            force_readback=[
+                                hands.left.get_force_value,
+                                hands.right.get_force_value,
+                            ],
+                        )
+                    )
+                time.sleep(max(0.0, row_start + tick * tick_period - time.monotonic()))
+            if full:
+                sides = grasps.observe_targets(report["rows_sent"] - 1, hand_targets)
+                if releasing:
+                    release = wait_for_hand_state(
+                        feedback,
+                        robot,
+                        rig,
+                        folder,
+                        releasing,
+                        began + report["max_wall_seconds"],
+                        opening=True,
+                    )
+                    release.update(row=report["rows_sent"] - 1, chunk=sequence)
+                    report["release_events"].append(release)
+                    print("RELEASE_CONFIRMED", json.dumps(release), flush=True)
+                if sides:
+                    event = wait_for_hand_state(
+                        feedback,
+                        robot,
+                        rig,
+                        folder,
+                        sides,
+                        began + report["max_wall_seconds"],
+                        opening=False,
+                    )
+                    for side in sides:
+                        grasps.grasp_checked[side] = True
+                    event.update(row=report["rows_sent"] - 1, chunk=sequence)
+                    report["grasp_events"].append(event)
+                    label = (
+                        "GRASP_CHECKED_WITH_DROP" if event["dropped_sides"] else "GRASP_CONFIRMED"
+                    )
+                    print(label, json.dumps(event), flush=True)
+                if sides or releasing:
+                    observed_after = time.monotonic()
+                    break
+                if any(grasps.grasp_checked) and index + 1 >= CARRY_REPLAN_ROWS:
+                    break
+        end = measure(feedback)[0]
+        if robot.has_error():
+            raise RuntimeError("ATOM D SDK reports a drive or bus fault")
+        report["completed_chunks"] += 1
+        report["final_state"] = end.tolist()
+        report["elapsed_seconds"] = round(time.monotonic() - began, 3)
+        if not full:
+            measured = np.asarray(report["feedback"] + [end.tolist()])
+            report["peak_measured_motion_deg"] = float(
+                np.max(abs(np.rad2deg(measured[:, JOINT_COLUMNS] - state[JOINT_COLUMNS])))
+            )
+            report["playback_seconds"] = report["elapsed_seconds"]
+        save_view(folder, f"after-{sequence:02}.jpg", rig)
+        print(
+            "EPISODE_PROGRESS",
+            json.dumps(
+                dict(
+                    chunk=sequence,
+                    rows=report["rows_sent"],
+                    elapsed=report["elapsed_seconds"],
+                    openings=end[[7, 15]].tolist(),
+                    displacement_deg=round(
+                        float(np.max(abs(np.rad2deg((end - state)[JOINT_COLUMNS])))), 2
+                    ),
+                )
+            ),
+            flush=True,
+        )
+    return "episode_frame_limit" if full else "hardware_validation_completed"
+
+
+def run(args, folder, report):
+    with ExitStack() as stack:
+        stack.enter_context(atom_d_control_lease())
+        ws = stack.enter_context(policy_session(args.weights, folder, report))
+        if args.observation_npz:
+            with np.load(args.observation_npz, allow_pickle=False) as sample:
+                state = sample["state"]
+                images = {key: sample[key] for key in ("top_camera", "left_camera", "right_camera")}
+            actions = infer_actions(ws, state, images)
+            now = time.monotonic()
+            chunk = ActionChunk.create(1, now, now, actions, horizon=50)
+            np.savez(folder / "prediction.npz", state=state, actions=chunk.actions, **images)
+            report.update(
+                observation_file=str(args.observation_npz.resolve()),
+                predicted_shape=list(actions.shape),
+            )
+            return "recorded_observation_inferred"
+
+        os.environ["CYCLONEDDS_URI"] = home.DDS_URI
+        sys.path[:0] = [str(home.DRIVER), str(home.DRIVER / "robot_control_dds")]
+        bounds = controller_bounds(read_controller_settings(home.PC1))
+        limits = hardware_limits()
+        feedback = None if args.home_start else home.Feedback()
+        rig = stack.enter_context(camera_rig())
+        rig.wait_ready()
+        robot = None
+        if args.home_start:
+            report["home_start"], feedback, robot = home.home_session(
+                execute=args.execute, cancelled=lambda: (folder / "stop").exists()
+            )
+            print("ATOM_HOME_START_RESULT", json.dumps(report["home_start"]), flush=True)
+            if args.execute and report["home_start"]["status"] != "home_start_completed":
+                raise RuntimeError("Home-start did not complete")
+        else:
+            measure(feedback)
+            if args.execute:
+                robot = home.connect_upper_driver(feedback)
+        if args.execute and (
+            robot.get_robot_type() != "ATOM D" or robot.hand_type != "dh" or robot.has_error()
+        ):
+            raise RuntimeError("Native ATOM D driver startup failed")
+        # Wait for observations captured after the start pose has been established.
+        cutoff = time.monotonic()
+        while min(v["received_monotonic"] for v in rig.snapshot()[1].values()) <= cutoff:
+            if time.monotonic() - cutoff >= 0.7:
+                raise RuntimeError("No fresh camera frames for the initial pose")
+            time.sleep(0.01)
+        initial_prediction = predict(ws, feedback, rig, bounds)
+        chunk, points, state, images, info = initial_prediction
+        save_images(folder / "views.jpg", images)
+        np.savez(folder / "prediction.npz", state=state, actions=chunk.actions, **images)
+        target = np.asarray(json.loads(home.CONFIG.read_text())["physical_state"])
+        errors_deg = np.rad2deg((state - target)[JOINT_COLUMNS])
+        if not args.execute or not args.full_episode:
+            _, q, dq, tau = measure(feedback)
+            kp, kd, _, _ = limits
+            held = q + (tau + kd * dq) / kp
+            prefix = points[:VALIDATION_FRAMES]
+            steps = np.diff(np.vstack([held, prefix[:, :17]]), axis=0)
+            report.update(
+                max_step_deg=float(np.rad2deg(abs(steps[:, 1:]).max())),
+                max_excursion_deg=float(np.rad2deg(abs(prefix[:, 1:17] - q[1:]).max())),
+                full_chunk_excursion_deg=float(np.rad2deg(abs(points[:, 1:17] - q[1:]).max())),
+                gripper_range=[prefix[:, 17:].min(0).tolist(), prefix[:, 17:].max(0).tolist()],
+            )
+        report.update(
+            initial_state=state.tolist(),
+            frame_info=info,
+            predicted_frames=len(points),
+            predicted_shape=list(chunk.actions.shape),
+            home_peak_joint=STATE_NAMES[JOINT_COLUMNS[np.argmax(abs(errors_deg))]],
+            home_max_error_deg=float(np.max(abs(errors_deg))),
+            initial_openings=state[[7, 15]].tolist(),
+            observation_age_ms=round(1000 * (chunk.received_time - chunk.observation_time), 1),
+        )
+        print(
+            "LIVE_CHUNK",
+            json.dumps(
+                {
+                    k: report[k]
+                    for k in (
+                        "predicted_shape",
+                        "home_peak_joint",
+                        "home_max_error_deg",
+                        "initial_openings",
+                    )
+                }
+            ),
+            flush=True,
+        )
+        if not args.execute:
+            return "observation_verified"
+        try:
+            return playback(
+                ws,
+                feedback,
+                rig,
+                bounds,
+                robot,
+                limits,
+                folder,
+                report,
+                args.full_episode,
+                initial_prediction,
+            )
+        finally:
+            try:
+                save_view(folder, "last.jpg", rig)
+            except Exception as exc:
+                report["last_view_error"] = str(exc)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--weights",
+        "--artifact",
+        default=ARTIFACT,
+        metavar="PATH",
+        help="Pi0.5 Artifact directory, checkpoint pointer, or declared deployment weights file",
+    )
+    parser.add_argument(
+        "--observation-npz", type=Path, help="Infer once from recorded state and camera images"
+    )
+    parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--full-episode",
+        action="store_true",
+        help="Run successive 50-row chunks from fresh observations",
+    )
+    parser.add_argument(
+        "--home-start",
+        action="store_true",
+        help="Open the grippers and return to the recorded start pose (motion requires --execute)",
+    )
+    parser.add_argument("--site-clear", action="store_true")
+    args = parser.parse_args(argv)
+    if args.observation_npz and (args.execute or args.full_episode or args.home_start):
+        parser.error(
+            "--observation-npz cannot be combined with --execute, --home-start or --full-episode"
+        )
+    if args.execute and not args.site_clear:
+        parser.error("Motion requires --site-clear")
+
+    def interrupted(*_):
+        raise InterruptedError("Trial interrupted")
+
+    for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, interrupted)
+    folder = (
+        ROOT / "runs/atom_d_inference" / datetime.datetime.now().strftime("trial-%Y%m%d-%H%M%S-%f")
+    )
+    folder.mkdir(parents=True)
+    report = dict(
+        execute=args.execute,
+        home_start_requested=args.home_start,
+        rows_sent=0,
+        feedback=[],
+        folder=str(folder),
+    )
+    print("EPISODE_FOLDER", str(folder), flush=True)
+    try:
+        report["status"] = run(args, folder, report)
+    except Exception as exc:
+        report.update(status="stopped", error=str(exc))
+    (folder / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(
+        "TRIAL_RESULT",
+        json.dumps({k: v for k, v in report.items() if k not in ("feedback", "gripper_feedback")}),
+        flush=True,
+    )
+    return 2 if report["status"] == "stopped" else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
