@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PORTS = (8001, 8000)
 
 
-def _connect_policy(stack, port, artifact):
+def _connect_policy(stack, port, artifact, report=None):
     """Keep the socket on the caller's stack only when it serves the selected model."""
     from websockets.sync.client import connect
 
@@ -39,6 +39,8 @@ def _connect_policy(stack, port, artifact):
                 f"Incompatible policy at port {port}: expected state [18], actions [50, 18]"
             )
         policy_contract(meta, requested_horizon=50)
+        if report is not None:
+            report["supports_replay_seed"] = meta.get("supports_replay_seed") is True
         stack.enter_context(attempt.pop_all())
         return ws
 
@@ -70,7 +72,7 @@ def policy_session(weights, folder, report):
         available = []
         for port in PORTS:
             try:
-                ws = _connect_policy(stack, port, model.artifact_dir)
+                ws = _connect_policy(stack, port, model.artifact_dir, report)
             except ConnectionRefusedError:
                 available.append(port)
                 continue
@@ -118,7 +120,7 @@ def policy_session(weights, folder, report):
         deadline = time.monotonic() + 180
         while process.poll() is None and time.monotonic() < deadline:
             try:
-                ws = _connect_policy(stack, port, model.artifact_dir)
+                ws = _connect_policy(stack, port, model.artifact_dir, report)
             except ConnectionRefusedError:
                 time.sleep(0.5)
                 continue

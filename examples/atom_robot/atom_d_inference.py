@@ -8,8 +8,11 @@ import signal
 import sys
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple, Optional
 
 import numpy as np
 
@@ -45,6 +48,7 @@ JOINT_COLUMNS = np.r_[0:7, 8:15, 16:18]
 GRASP_APPROACH_ROWS = 15
 CARRY_REPLAN_ROWS = 16
 DH_GRIP_OBJECT_DROPPED = 3
+PREFETCH_ROWS = 4
 
 
 class GraspTracker:
@@ -227,19 +231,25 @@ def hardware_limits():
     )
 
 
-def infer_actions(ws, state, images):
-    ws.send(
-        msgpack_numpy.packb(
-            {"state": state, "images": images, "prompt": "Fold the T-shirt with both arms."}
-        )
-    )
+def request_chunk(ws, state, images, replay_seed=None):
+    request = {"state": state, "images": images, "prompt": "Fold the T-shirt with both arms."}
+    if replay_seed is not None:
+        request["replay_seed"] = replay_seed
+    ws.send(msgpack_numpy.packb(request))
     reply = ws.recv(timeout=3)
     if isinstance(reply, str):
         raise RuntimeError(reply)
-    return np.asarray(msgpack_numpy.unpackb(reply)["actions"])
+    result = msgpack_numpy.unpackb(reply)
+    if replay_seed is not None and result.get("seed") != replay_seed:
+        raise RuntimeError("Policy did not reuse the requested sampling seed")
+    return np.asarray(result["actions"]), result.get("seed")
 
 
-def predict(ws, feedback, rig, bounds, sequence=1, after=None):
+def infer_actions(ws, state, images):
+    return request_chunk(ws, state, images)[0]
+
+
+def capture(feedback, rig, after=None):
     images, info = rig.snapshot()
     while after is not None and min(v["received_monotonic"] for v in info.values()) <= after:
         if time.monotonic() - after > 0.7:
@@ -247,12 +257,98 @@ def predict(ws, feedback, rig, bounds, sequence=1, after=None):
         time.sleep(0.01)
         images, info = rig.snapshot()
     state, upper, _, _ = measure(feedback)
+    return state, upper, images, info
+
+
+class Prediction(NamedTuple):
+    chunk: ActionChunk
+    points: np.ndarray
+    state: np.ndarray
+    images: dict
+    frame_info: dict
+    seed: Optional[int]
+
+
+def predict_observation(ws, observation, bounds, sequence, replay_seed=None):
+    state, upper, images, info = observation
     stamp = min(data["received_monotonic"] for data in info.values())
-    a = infer_actions(ws, state, images)
-    chunk = ActionChunk.create(sequence, stamp, time.monotonic(), a, horizon=50)
-    ChunkGate().accept(chunk, time.monotonic())
+    actions, seed = request_chunk(ws, state, images, replay_seed)
+    chunk = ActionChunk.create(sequence, stamp, time.monotonic(), actions, horizon=50)
     points = actuator_targets(chunk.actions, upper, bounds, saturate_joints=True)
-    return chunk, points, state, images, info
+    return Prediction(chunk, points, state, images, info, seed)
+
+
+def predict(ws, feedback, rig, bounds, sequence=1, after=None, replay_seed=None):
+    prediction = predict_observation(
+        ws, capture(feedback, rig, after), bounds, sequence, replay_seed
+    )
+    ChunkGate().accept(prediction.chunk, time.monotonic())
+    return prediction
+
+
+def hand_status(feedback):
+    hands = feedback.messages["rt/hands/state"]
+    return (hands.left.grip_state.value, hands.right.grip_state.value)
+
+
+@dataclass
+class PendingChunk:
+    future: Future
+    start_row: int
+    started: float
+    reference: np.ndarray
+    tail: np.ndarray
+    hands: tuple
+    targets: np.ndarray
+    boundary: bool = False
+    hand_changed: bool = False
+
+    def bridge_length(self, points, covered):
+        """Use only the contiguous prefix inside the held-pose and hand envelope."""
+        future = points[covered : covered + PREFETCH_ROWS]
+        for count, row in enumerate(future):
+            if (
+                np.max(abs(row[1:17] - self.tail[-1, 1:17])) > np.deg2rad(2)
+                or np.max(abs(row[17:] - self.targets)) > 0.2
+            ):
+                return count
+        return len(future)
+
+    def rejection(self, prediction, covered, elapsed, current, images, hands, maximum_age):
+        """Check the part of the new prediction covered by commands already sent."""
+        chunk, points, state, original_images, _, _ = prediction
+        if covered != len(self.tail) or abs(elapsed - covered * PERIOD) > PERIOD:
+            return "timing"
+        if time.monotonic() - chunk.observation_time >= maximum_age:
+            return "stale"
+        if (
+            self.hand_changed
+            or hands != self.hands
+            or np.max(abs(current[[7, 15]] - state[[7, 15]])) > 0.05
+        ):
+            return "hand_feedback"
+        # The early plan may bridge only with the existing hand command.
+        # A fresh boundary plan may change the hands on its first unsent row.
+        end = covered if self.boundary else covered + 1
+        if np.max(abs(points[:end, 17:] - self.targets)) > 0.2:
+            return "hand_intent"
+        # Both sets of references are in motor space. Encoder positions include
+        # gravity deflection, so compare measured displacement, not absolute q.
+        drift = current[JOINT_COLUMNS] - state[JOINT_COLUMNS]
+        expected = self.tail[-1, 1:17] - self.reference[1:17]
+        if np.max(abs(drift - expected)) > np.deg2rad(2):
+            return "tracking"
+        if np.max(abs(points[:covered, 1:17] - self.tail[:, 1:17])) > np.deg2rad(2):
+            return "overlap"
+        if not self.boundary and not self.bridge_length(points, covered):
+            return "bridge_excursion"
+        if np.max(abs(points[covered, 1:17] - self.tail[-1, 1:17])) > np.deg2rad(4):
+            return "seam"
+        for name, image in images.items():
+            delta = image[::8, ::8].astype(np.int16) - original_images[name][::8, ::8]
+            if np.mean(abs(delta)) > 8:
+                return "scene"
+        return None
 
 
 def save_view(folder, name, rig):
@@ -268,7 +364,9 @@ def save_images(path, images):
     Image.fromarray(panel).save(path)
 
 
-def playback(ws, feedback, rig, bounds, robot, limits, folder, report, full, initial_prediction):
+def playback(
+    ws, feedback, rig, bounds, robot, limits, folder, report, full, initial_prediction, pool=None
+):
     kp, kd, rated, velocity = limits
     gate = ChunkGate()
     repeating = LoopGuard()
@@ -281,6 +379,8 @@ def playback(ws, feedback, rig, bounds, robot, limits, folder, report, full, ini
         left_force=GRIPPER_FORCE_PERCENT, right_force=GRIPPER_FORCE_PERCENT
     )
     report.update(
+        inference_mode="async" if pool is not None else "sync",
+        handoffs=[],
         completed_chunks=0,
         max_rows=1600 if full else VALIDATION_FRAMES,
         max_wall_seconds=120,
@@ -299,23 +399,78 @@ def playback(ws, feedback, rig, bounds, robot, limits, folder, report, full, ini
     sequence = 0
     observed_after = None
     last_dropped = set()
+    pending = None
+    ended = began
     while report["rows_sent"] < report["max_rows"]:
         sequence += 1
         report["active_chunk"] = sequence
         report["executed_rows_by_chunk"].append(0)
-        prediction = (
-            initial_prediction
-            if sequence == 1
-            else predict(ws, feedback, rig, bounds, sequence, observed_after)
-        )
+        first = 0
+        replay_seed = None
+        prediction = initial_prediction if sequence == 1 else None
+        handoff = dict(chunk=sequence, source="sync", skipped_rows=0)
+        bridge = False
+        if pending is not None:
+            # Drain even a discarded response before reusing the same WebSocket.
+            candidate = pending.future.result()
+            if type(candidate.seed) is not int:
+                raise RuntimeError("Prefetched policy response has no sampling seed")
+            covered = report["rows_sent"] - pending.start_row
+            reason = "gripper_event"
+            if observed_after is None:
+                boundary_obs = capture(feedback, rig)
+                status = hand_status(feedback)
+                reason = pending.rejection(
+                    candidate,
+                    covered,
+                    ended - pending.started,
+                    boundary_obs[0],
+                    boundary_obs[2],
+                    status,
+                    gate.maximum_age,
+                )
+            job, pending = pending, None
+            if reason is None:
+                prediction, first = candidate, covered
+                bridge = not job.boundary
+                handoff.update(source="prefetch" if bridge else "boundary", skipped_rows=first)
+                if bridge:
+                    # Re-anchor on the same boundary observation used by synchronous
+                    # playback. Only a short prefix ever comes from the earlier view.
+                    count = job.bridge_length(candidate.points, first)
+                    tail = candidate.points[first : first + count]
+                    started = time.monotonic()
+                    future = pool.submit(
+                        predict_observation, ws, boundary_obs, bounds, sequence + 1, candidate.seed
+                    )
+                    pending = PendingChunk(
+                        future,
+                        report["rows_sent"],
+                        started,
+                        last_sent,
+                        tail,
+                        status,
+                        job.targets,
+                        boundary=True,
+                    )
+            else:
+                handoff["discarded"] = reason
+                replay_seed = candidate.seed
+        if prediction is None:
+            prediction = predict(ws, feedback, rig, bounds, sequence, observed_after, replay_seed)
         observed_after = None
-        chunk, points, state, images, _ = prediction
+        chunk, points, state, images, _, seed = prediction
+        handoff["seed"] = seed
+        report["handoffs"].append(handoff)
         np.savez(folder / f"chunk-{sequence:02}.npz", state=state, actions=chunk.actions, **images)
-        if repeating.observe(chunk.actions, state):
+        if not bridge and repeating.observe(chunk.actions, state):
             return "stopped_repeated_predictions"
-        points = points[: report["max_rows"] - report["rows_sent"]]
+        points = points[: first + report["max_rows"] - report["rows_sent"]]
+        if bridge:
+            points = points[: first + len(pending.tail)]
         gate.accept(chunk, time.monotonic())
-        for index, row in enumerate(points):
+        for index in range(first, len(points)):
+            row = points[index]
             report["active_row"] = index
             hand_targets, releasing = (
                 grasps.hand_targets(row[17:19], state[[7, 15]]) if full else (row[17:19], [])
@@ -343,6 +498,8 @@ def playback(ws, feedback, rig, bounds, robot, limits, folder, report, full, ini
                 if robot.has_error():
                     raise RuntimeError("ATOM D SDK reports a drive or bus fault")
                 hands = feedback.messages["rt/hands/state"]
+                if pending is not None and hand_status(feedback) != pending.hands:
+                    pending.hand_changed = True
                 dropped = {
                     side
                     for side in ("left", "right")
@@ -368,6 +525,10 @@ def playback(ws, feedback, rig, bounds, robot, limits, folder, report, full, ini
                     raise RuntimeError("Servo scheduling deadline missed")
                 if tick == 1:
                     hand_command_time = time.monotonic() - began
+                    if index == first and sequence > 1:
+                        handoff["boundary_wait_ms"] = round(
+                            1000 * (began + hand_command_time - ended), 2
+                        )
                 robot.command_joint_state(
                     command[1:8],
                     command[8:15],
@@ -431,8 +592,46 @@ def playback(ws, feedback, rig, bounds, robot, limits, folder, report, full, ini
                 if sides or releasing:
                     observed_after = time.monotonic()
                     break
-                if any(grasps.grasp_checked) and index + 1 >= CARRY_REPLAN_ROWS:
+                segment_end = (
+                    min(len(points), CARRY_REPLAN_ROWS)
+                    if any(grasps.grasp_checked)
+                    else len(points)
+                )
+                if index + 1 >= segment_end:
                     break
+                remaining = segment_end - index - 1
+                if (
+                    pool is not None
+                    and pending is None
+                    and remaining == PREFETCH_ROWS
+                    and report["rows_sent"] + remaining < report["max_rows"]
+                ):
+                    tail = points[index + 1 : segment_end]
+                    # Only speculate through stable binary hand targets. Pending
+                    # closures and releases get an observation after confirmation.
+                    if (
+                        None not in grasps.open_intent
+                        and all(
+                            start is None or checked
+                            for start, checked in zip(grasps.since, grasps.grasp_checked)
+                        )
+                        and np.max(abs(tail[:, 17:] - hand_targets)) <= 0.2
+                    ):
+                        observed = capture(feedback, rig)
+                        started = time.monotonic()
+                        future = pool.submit(
+                            predict_observation, ws, observed, bounds, sequence + 1
+                        )
+                        pending = PendingChunk(
+                            future,
+                            report["rows_sent"],
+                            started,
+                            last_sent,
+                            tail,
+                            hand_status(feedback),
+                            hand_targets.copy(),
+                        )
+        ended = time.monotonic()
         end = measure(feedback)[0]
         if robot.has_error():
             raise RuntimeError("ATOM D SDK reports a drive or bus fault")
@@ -512,7 +711,7 @@ def run(args, folder, report):
                 raise RuntimeError("No fresh camera frames for the initial pose")
             time.sleep(0.01)
         initial_prediction = predict(ws, feedback, rig, bounds)
-        chunk, points, state, images, info = initial_prediction
+        chunk, points, state, images, info, _ = initial_prediction
         save_images(folder / "views.jpg", images)
         np.savez(folder / "prediction.npz", state=state, actions=chunk.actions, **images)
         target = np.asarray(json.loads(home.CONFIG.read_text())["physical_state"])
@@ -556,6 +755,14 @@ def run(args, folder, report):
         )
         if not args.execute:
             return "observation_verified"
+        pool = None
+        if args.full_episode and args.inference_mode == "async" and report["supports_replay_seed"]:
+            pool = stack.enter_context(
+                ThreadPoolExecutor(max_workers=1, thread_name_prefix="policy")
+            )
+        elif args.full_episode and args.inference_mode == "async":
+            report["sync_reason"] = "policy_does_not_support_replay_seed"
+            print("INFERENCE_MODE sync: policy does not support replay_seed", flush=True)
         try:
             return playback(
                 ws,
@@ -568,6 +775,7 @@ def run(args, folder, report):
                 report,
                 args.full_episode,
                 initial_prediction,
+                pool,
             )
         finally:
             try:
@@ -587,6 +795,12 @@ def main(argv=None):
     )
     parser.add_argument(
         "--observation-npz", type=Path, help="Infer once from recorded state and camera images"
+    )
+    parser.add_argument(
+        "--inference-mode",
+        choices=("async", "sync"),
+        default="async",
+        help="Full episodes prefetch the next chunk by default",
     )
     parser.add_argument("--execute", action="store_true")
     parser.add_argument(

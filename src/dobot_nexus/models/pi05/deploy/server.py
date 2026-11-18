@@ -143,7 +143,7 @@ class NexusOpenPiPolicy:
             state_dim=int(self.policy.spec.state_dim),
             default_prompt=self.default_prompt,
         )
-        result = self.prediction(canonical)
+        result = self.prediction(canonical, replay_seed=observation.get("replay_seed"))
         actions = np.asarray(result["actions"], dtype=np.float32)
         expected = (
             1,
@@ -242,6 +242,7 @@ def run_server(args: argparse.Namespace) -> None:
         **policy.spec.to_dict(),
         **identity,
         "protocol": OPENPI_PROTOCOL_NAME,
+        "supports_replay_seed": True,
         "policy_spec": policy.spec.to_dict(),
         "input_schema": {
             "state": [policy.spec.state_dim],
