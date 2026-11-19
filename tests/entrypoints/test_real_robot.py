@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -17,6 +18,45 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class RealRobotEntrypointsTest(unittest.TestCase):
+    def test_policy_launcher_keeps_the_callers_python_after_changing_directory(self):
+        with tempfile.TemporaryDirectory(prefix="nexus policy caller ") as directory:
+            caller = Path(directory).resolve()
+            artifact = self._artifact(caller)
+            probe = caller / "python-probe"
+            probe.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, sys\n"
+                "if sys.argv[1] == '-c':\n"
+                "    print('torch=launcher-probe')\n"
+                "elif sys.argv[1].endswith('resolve_model.py'):\n"
+                "    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+                "else:\n"
+                "    print(json.dumps({'python': sys.argv[0], 'cwd': os.getcwd(), 'args': sys.argv[1:]}))\n"
+            )
+            probe.chmod(0o755)
+            executable = caller / ".venv/bin/python"
+            executable.parent.mkdir(parents=True)
+            executable.symlink_to(probe)
+            # Exercise the actual exec path, stubbing only the Torch dependency
+            # probe and server process; artifact resolution still runs normally.
+            for selection in (".venv/bin/python", "python", str(executable)):
+                with self.subTest(selection=selection):
+                    result = subprocess.run(
+                        ["bash", str(ROOT / "examples/pi05_real_robot/start_policy_server.sh"),
+                         str(artifact.relative_to(caller))],
+                        cwd=caller, capture_output=True, text=True, timeout=30,
+                        env={**os.environ, "POLICY_PYTHON": selection,
+                             "PATH": ".venv/bin:" + os.environ["PATH"],
+                             "TOKENIZER_PATH": "", "OPENPI_TOKENIZER_PATH": ""},
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    child = json.loads(result.stdout)
+                    self.assertEqual(child["python"], str(executable))
+                    self.assertEqual(child["cwd"], str(ROOT))
+                    self.assertEqual(child["args"][:2], ["-m", "dobot_nexus.models.pi05.deploy.server"])
+                    index = child["args"].index("--artifact")
+                    self.assertEqual(child["args"][index + 1], str(artifact))
+
     def test_robot_launchers_work_from_a_standalone_directory(self):
         # The robot receives only this directory, without the Nexus source tree.
         # --help exercises both imports and CLI assembly without opening hardware.
