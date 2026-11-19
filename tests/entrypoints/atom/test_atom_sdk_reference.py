@@ -10,14 +10,14 @@ from unittest.mock import patch
 
 import numpy as np
 
-from examples.atom_robot.core import FixedRateChunk, RuntimeFault, actuator_targets
-from examples.atom_robot.native import NativeBridge, sdk_reference_gains
-from examples.atom_robot.sdk_session import sdk_reference_session
+from examples.real_robot.atom_common.core import FixedRateChunk, RuntimeFault, actuator_targets
+from examples.real_robot.atom_w_0759.native import NativeBridge, sdk_reference_gains
+from examples.real_robot.atom_w_0759.sdk_session import sdk_reference_session
 
 
 class SDKReferenceRegressionTests(unittest.TestCase):
     def test_camera_startup_retries_do_not_hide_runtime_frame_loss(self):
-        from examples.atom_robot.sensors import CameraRig, CameraSpec, FrameTimeout
+        from examples.real_robot.atom_common.sensors import CameraRig, CameraSpec, FrameTimeout
 
         fail = threading.Event()
 
@@ -172,7 +172,7 @@ class SDKReferenceRegressionTests(unittest.TestCase):
             obj.check(True)
 
     def test_sdk_gains_use_array_rows_including_waist_not_metadata_indices(self):
-        from examples.atom_robot.core import STATE_NAMES
+        from examples.real_robot.atom_common.core import STATE_NAMES
 
         names = ("torso_joint",) + STATE_NAMES[:7] + STATE_NAMES[8:15] + STATE_NAMES[16:]
         rows = [{"name": name, "index": i + 12, "kp": 200, "kd": 8} for i, name in enumerate(names)]
@@ -181,7 +181,7 @@ class SDKReferenceRegressionTests(unittest.TestCase):
             rows[i].update(kp=300, kd=15)
         rows.append({"name": "unused_joint", "index": 20, "kp": 0, "kd": 0})
         with patch(
-            "examples.atom_robot.native.checked_bytes", return_value=json.dumps(rows).encode()
+            "examples.real_robot.atom_w_0759.native.checked_bytes", return_value=json.dumps(rows).encode()
         ):
             kp, kd = sdk_reference_gains("/sdk")
         np.testing.assert_array_equal(

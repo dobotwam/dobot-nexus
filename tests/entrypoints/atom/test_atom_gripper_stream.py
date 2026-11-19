@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from examples.atom_robot import workers
-from examples.atom_robot.core import RuntimeFault
+from examples.real_robot.atom_w_0759 import workers
+from examples.real_robot.atom_common.core import RuntimeFault
 
 
 class GripperStreamTests(unittest.TestCase):
@@ -90,7 +90,7 @@ class GripperStreamTests(unittest.TestCase):
         with (
             patch.dict(sys.modules, {"atom_training": parent, "atom_training.dh_pc1": module}),
             patch.object(workers, "time", fake_time),
-            patch("examples.atom_robot.native.checked_bytes", lambda *a: b""),
+            patch("examples.real_robot.atom_w_0759.native.checked_bytes", lambda *a: b""),
         ):
             workers.gripper_worker(
                 {"sdk_root": "/sdk", "execute": False, "action_fps": 20.0, "horizon": 50},

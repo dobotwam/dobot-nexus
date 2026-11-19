@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from examples.atom_robot.atom_d_operator import CANCELLED, OperatorCancelled
+from examples.real_robot.atom_d.console import CANCELLED, OperatorCancelled
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -64,7 +64,7 @@ class OperatorTest(unittest.TestCase):
                 sys.executable,
                 "-u",
                 "-c",
-                "import sys; from examples.atom_robot.atom_d_operator import operator_session; "
+                "import sys; from examples.real_robot.atom_d.console import operator_session; "
                 "from tests.entrypoints.atom.test_atom_d_operator import fake_worker; "
                 "sys.exit(operator_session(sys.argv[1], fake_worker))",
                 temp.name,
@@ -153,7 +153,7 @@ class OperatorTest(unittest.TestCase):
 
 class TrialRoutingTest(unittest.TestCase):
     def test_manual_home_uses_sdk_home_without_starting_policy(self):
-        from examples.atom_robot import atom_d_inference as driver
+        from examples.real_robot.atom_d import inference as driver
 
         args = SimpleNamespace(execute=True, site_clear=True, home_start=False)
         with tempfile.TemporaryDirectory() as tmp, patch.object(

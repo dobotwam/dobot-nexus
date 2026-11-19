@@ -25,7 +25,7 @@ jobs:
           python -m pip check
       - name: Compile and test contracts
         run: |
-          python -m compileall -q src tests scripts examples/pi05_real_robot
+          python -m compileall -q src tests scripts examples/real_robot
           python -m unittest discover -s tests -v
       - name: Build and install wheel outside checkout
         run: python scripts/check_wheel.py

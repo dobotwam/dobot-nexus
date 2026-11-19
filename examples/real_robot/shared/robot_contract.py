@@ -87,7 +87,7 @@ class RobotLayout:
 
 def load_robot_layout(value="dual6"):
     if value in ("dual6", "atom18"):
-        path = Path(__file__).resolve().parents[1] / "layouts" / (value + ".json")
+        path = Path(__file__).resolve().parent / "layouts" / (value + ".json")
     else:
         path = Path(value).expanduser()
     return RobotLayout.from_dict(json.loads(path.read_text()))

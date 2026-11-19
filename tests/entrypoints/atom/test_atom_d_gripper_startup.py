@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from examples.atom_robot.atom_d_home import prepare_home_grippers
+from examples.real_robot.atom_d.home import prepare_home_grippers
 
 
 def hand(init=1, grip=1, opening=1.0):

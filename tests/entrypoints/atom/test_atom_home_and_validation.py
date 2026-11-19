@@ -6,9 +6,9 @@ from pathlib import Path
 
 import numpy as np
 
-from examples.atom_robot.core import RuntimeFault, Trajectory
-from examples.atom_robot.home import HOME_CONFIG, home_targets, tracking_playback_scale
-from examples.atom_robot.validation import (
+from examples.real_robot.atom_common.core import RuntimeFault, Trajectory
+from examples.real_robot.atom_w_0759.home import HOME_CONFIG, home_targets, tracking_playback_scale
+from examples.real_robot.atom_w_0759.validation import (
     require_live_validation,
     source_fingerprint,
     validate_read_only_report,

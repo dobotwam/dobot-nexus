@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from examples.atom_robot.core import (
+from examples.real_robot.atom_common.core import (
     ActionChunk,
     BlockedDirectionGuard,
     ChunkGate,

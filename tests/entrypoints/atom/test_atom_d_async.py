@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from dobot_nexus.inference.handlers import PredictionHandler
-from examples.atom_robot import atom_d_inference as driver
+from examples.real_robot.atom_d import inference as driver
 
 
 class PrefetchTests(unittest.TestCase):

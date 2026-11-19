@@ -13,10 +13,10 @@ from unittest.mock import patch
 
 import numpy as np
 
-from examples.atom_robot import atom_d_inference, atom_d_policy
-from examples.atom_robot.core import RuntimeFault, actuator_targets
+from examples.real_robot.atom_d import inference as atom_d_inference, policy as atom_d_policy
+from examples.real_robot.atom_common.core import RuntimeFault, actuator_targets
 
-ROOT = Path(atom_d_inference.__file__).resolve().parents[2]
+ROOT = Path(atom_d_inference.__file__).resolve().parents[3]
 
 
 class AtomDReleaseTest(unittest.TestCase):
@@ -53,6 +53,16 @@ class AtomDReleaseTest(unittest.TestCase):
                 check=True,
             )
             self.assertIn("--observation-npz", result.stdout)
+
+    def test_legacy_imports_share_the_canonical_runtime(self):
+        from examples.atom_robot import atom_d_home, atom_d_inference as legacy, core
+        from examples.real_robot.atom_common.core import RuntimeFault
+        from examples.real_robot.atom_d import home
+
+        self.assertIs(legacy, atom_d_inference)
+        self.assertIs(atom_d_home, home)
+        self.assertIs(core.RuntimeFault, RuntimeFault)
+        self.assertTrue(home.CONFIG.is_file())
 
     def test_recorded_run_rejects_motion_flags_before_loading_policy(self):
         for flag in ("--execute", "--full-episode", "--home-start"):

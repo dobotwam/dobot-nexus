@@ -11,7 +11,7 @@ from unittest import mock
 
 import yaml
 
-from examples.pi05_real_robot._runtime.resolve_model import resolve_model_path
+from examples.real_robot.shared.resolve_model import resolve_model_path
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -20,11 +20,17 @@ class RealRobotEntrypointsTest(unittest.TestCase):
     def test_robot_launchers_work_from_a_standalone_directory(self):
         # The robot receives only this directory, without the Nexus source tree.
         # --help exercises both imports and CLI assembly without opening hardware.
+        for source in ("examples/real_robot/dobot_dual_arm_14d", "examples/pi05_real_robot"):
+            with self.subTest(source=source):
+                self.check_standalone_launchers(ROOT / source)
+
+    def check_standalone_launchers(self, source):
         with tempfile.TemporaryDirectory() as directory:
             copied = Path(directory) / "robot copy" / "pi05_real_robot"
             shutil.copytree(
-                ROOT / "examples/pi05_real_robot",
+                source,
                 copied,
+                symlinks=True,
                 ignore=shutil.ignore_patterns("__pycache__"),
             )
             for script in copied.glob("start_*.sh"):
@@ -54,7 +60,7 @@ class RealRobotEntrypointsTest(unittest.TestCase):
                         )
 
     def test_standard_bridge_rejects_memory_before_warmup_or_robot_connection(self):
-        from examples.pi05_real_robot._runtime import dobot_dual_arm_14d as bridge
+        from examples.real_robot.dobot_dual_arm_14d._runtime import dobot_dual_arm_14d as bridge
 
         args = bridge.parse_args(["openpi-client"])
         policy = mock.Mock()
@@ -105,7 +111,7 @@ class RealRobotEntrypointsTest(unittest.TestCase):
         return artifact
 
     def test_client_rejects_explicit_dimension_mismatch_before_robot_connection(self):
-        from examples.pi05_real_robot._runtime import dobot_dual_arm_14d as bridge
+        from examples.real_robot.dobot_dual_arm_14d._runtime import dobot_dual_arm_14d as bridge
 
         policy = mock.Mock()
         policy.get_server_metadata.return_value = {"state_dim": 34, "action_dim": 34}

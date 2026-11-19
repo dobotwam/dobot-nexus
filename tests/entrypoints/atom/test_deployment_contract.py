@@ -15,10 +15,10 @@ from unittest.mock import patch
 
 import numpy as np
 
-from examples.atom_robot import home, run, validate, validation, verify
-from examples.atom_robot.core import RuntimeFault, actuator_targets
-from examples.atom_robot.policy import policy_contract, policy_identity
-from examples.atom_robot.sensors import DEFAULT_CAMERA_CONFIG, load_camera_specs, resize_with_pad
+from examples.real_robot.atom_w_0759 import home, run, validate, validation, verify
+from examples.real_robot.atom_common.core import RuntimeFault, actuator_targets
+from examples.real_robot.atom_common.policy import policy_contract, policy_identity
+from examples.real_robot.atom_common.sensors import DEFAULT_CAMERA_CONFIG, load_camera_specs, resize_with_pad
 from tests.entrypoints.atom import test_atom_home_and_validation as validation_tests
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -206,8 +206,8 @@ class Block(importlib.abc.MetaPathFinder):
         if fullname.split('.')[0] in {'torch', 'pyrealsense2', 'cyclonedds', 'atom_training'}:
             raise AssertionError('Unexpected optional dependency: ' + fullname)
 sys.meta_path.insert(0, Block())
-from examples.atom_robot import run, home, validate, verify
-from examples.pi05_real_robot._runtime.robot_contract import load_robot_layout
+from examples.real_robot.atom_w_0759 import run, home, validate, verify
+from examples.real_robot.shared.robot_contract import load_robot_layout
 assert run.parse_args([]).head_mode == 'hold'
 assert len(load_robot_layout('atom18').state_names) == 18
 """
@@ -227,16 +227,21 @@ assert len(load_robot_layout('atom18').state_names) == 18
                 "#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n'
             )
             (caller / "python").chmod(0o755)
-            result = subprocess.run(
-                ["bash", str(ROOT / "examples/atom_robot/start_atom_runtime.sh"), "--help"],
-                cwd=caller,
-                capture_output=True,
-                text=True,
-                timeout=20,
-                env={**os.environ, "ATOM_PYTHON": "./python"},
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("--head-mode", result.stdout)
+            for launcher in (
+                "examples/real_robot/atom_w_0759/start_atom_runtime.sh",
+                "examples/atom_robot/start_atom_runtime.sh",
+            ):
+                with self.subTest(launcher=launcher):
+                    result = subprocess.run(
+                        ["bash", str(ROOT / launcher), "--help"],
+                        cwd=caller,
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                        env={**os.environ, "ATOM_PYTHON": "./python"},
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("--head-mode", result.stdout)
 
     def test_recipe_restores_artifact_horizon_and_uses_current_model_target(self):
         from dobot_nexus.core.config import load_config

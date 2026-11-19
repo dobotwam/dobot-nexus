@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from examples.atom_robot import atom_d_inference as inference
+from examples.real_robot.atom_d import inference as inference
 
 
 def hand(status, opening):

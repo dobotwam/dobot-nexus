@@ -3,8 +3,8 @@ import unittest
 
 import numpy as np
 
-from examples.atom_robot.core import RuntimeFault
-from examples.atom_robot.sensors import CameraRig, CameraSpec
+from examples.real_robot.atom_common.core import RuntimeFault
+from examples.real_robot.atom_common.sensors import CameraRig, CameraSpec
 
 
 class FakeCamera:

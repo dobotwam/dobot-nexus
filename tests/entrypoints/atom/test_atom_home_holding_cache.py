@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from examples.atom_robot.core import RuntimeFault
-from examples.atom_robot.native import NativeBridge, load_last_holding
+from examples.real_robot.atom_common.core import RuntimeFault
+from examples.real_robot.atom_w_0759.native import NativeBridge, load_last_holding
 
 
 class HomeHoldingCacheTests(unittest.TestCase):

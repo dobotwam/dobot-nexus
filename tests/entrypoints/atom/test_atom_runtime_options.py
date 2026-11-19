@@ -2,7 +2,7 @@ import contextlib
 import io
 import unittest
 
-from examples.atom_robot.run import config_for, parse_args
+from examples.real_robot.atom_w_0759.run import config_for, parse_args
 
 
 class RuntimeOptionsTest(unittest.TestCase):

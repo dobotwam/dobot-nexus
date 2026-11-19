@@ -12,9 +12,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from examples.atom_robot import workers
-from examples.atom_robot.core import RuntimeFault
-from examples.pi05_real_robot._runtime.robot_contract import PolicyRobotContract, load_robot_layout
+from examples.real_robot.atom_w_0759 import workers
+from examples.real_robot.atom_common.core import RuntimeFault
+from examples.real_robot.shared.robot_contract import PolicyRobotContract, load_robot_layout
 
 
 class ObservationPipelineTests(unittest.TestCase):
@@ -217,7 +217,7 @@ class LiveGripperDispatchTests(unittest.TestCase):
         with (
             patch.dict(sys.modules, names),
             patch.object(workers, "time", fake_time),
-            patch("examples.atom_robot.native.checked_bytes", lambda *a: b""),
+            patch("examples.real_robot.atom_w_0759.native.checked_bytes", lambda *a: b""),
         ):
             workers.gripper_worker(
                 {"sdk_root": "/sdk", "execute": True, "action_fps": 20.0, "horizon": 50},
@@ -328,7 +328,7 @@ class LiveGripperDispatchTests(unittest.TestCase):
 
 class HandoverRegressionTests(unittest.TestCase):
     def test_lost_initial_handover_is_retried_and_requires_fresh_feedback(self):
-        from examples.atom_robot.native import release_owned_control
+        from examples.real_robot.atom_w_0759.native import release_owned_control
 
         clock = NS(value=100.0)
         writes = []
@@ -359,7 +359,7 @@ class HandoverRegressionTests(unittest.TestCase):
         self.assertGreaterEqual(writes[1] - writes[0], 0.05)
 
     def test_no_handover_is_sent_for_control_not_acquired_by_this_session(self):
-        from examples.atom_robot.native import NativeBridge, release_owned_control
+        from examples.real_robot.atom_w_0759.native import NativeBridge, release_owned_control
 
         session = NS(
             requested=False,
@@ -375,7 +375,7 @@ class HandoverRegressionTests(unittest.TestCase):
         self.assertFalse(bridge.result()["upper_control_release_confirmed"])
 
     def test_stale_false_ownership_feedback_does_not_confirm_release(self):
-        from examples.atom_robot.native import release_owned_control
+        from examples.real_robot.atom_w_0759.native import release_owned_control
 
         clock = NS(value=100.0)
         session = NS(
@@ -396,7 +396,7 @@ class HandoverRegressionTests(unittest.TestCase):
         self.assertFalse(session.released)
 
     def test_receipt_keeps_frequency_for_the_next_live_start(self):
-        from examples.atom_robot import validation, verify
+        from examples.real_robot.atom_w_0759 import validation, verify
         from tests.entrypoints.atom.test_atom_home_and_validation import ValidationContractTest
 
         report = ValidationContractTest().valid()

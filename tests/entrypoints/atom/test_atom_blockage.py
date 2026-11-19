@@ -3,8 +3,8 @@ import unittest
 
 import numpy as np
 
-from examples.atom_robot.core import BlockedDirectionGuard
-from examples.atom_robot.kinematics import BlockageMonitor, JointBlockageMonitor, Kinematics
+from examples.real_robot.atom_common.core import BlockedDirectionGuard
+from examples.real_robot.atom_w_0759.kinematics import BlockageMonitor, JointBlockageMonitor, Kinematics
 
 
 class BlockageTest(unittest.TestCase):

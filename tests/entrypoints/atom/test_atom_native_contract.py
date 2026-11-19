@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from examples.atom_robot.core import RuntimeFault
-from examples.atom_robot.native import NativeBridge, load_last_holding, sdk_effort_limits
+from examples.real_robot.atom_common.core import RuntimeFault
+from examples.real_robot.atom_w_0759.native import NativeBridge, load_last_holding, sdk_effort_limits
 
 
 class NativeContractTest(unittest.TestCase):
@@ -48,7 +48,7 @@ class NativeContractTest(unittest.TestCase):
         bridge.effort = np.full(17, 40.0)
         q = np.linspace(-0.5, 1.4, 17)
         tau = np.full(17, 2.0)
-        with patch("examples.atom_robot.native.load_last_holding", side_effect=AssertionError):
+        with patch("examples.real_robot.atom_w_0759.native.load_last_holding", side_effect=AssertionError):
             bridge.seed_holding(q, tau)
         np.testing.assert_allclose(bridge.reference, q)
         np.testing.assert_allclose(bridge.tau_ff[1:15], 2.0)
@@ -63,7 +63,7 @@ class NativeContractTest(unittest.TestCase):
         bridge.kp = np.full(17, 200.0)
         bridge.effort = np.full(17, 40.0)
         with patch(
-            "examples.atom_robot.native.load_last_holding", side_effect=RuntimeFault("stale")
+            "examples.real_robot.atom_w_0759.native.load_last_holding", side_effect=RuntimeFault("stale")
         ):
             with self.assertRaises(RuntimeFault):
                 bridge.seed_holding(np.zeros(17), np.zeros(17))

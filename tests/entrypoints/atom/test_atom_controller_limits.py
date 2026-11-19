@@ -5,16 +5,16 @@ from unittest.mock import patch
 
 import numpy as np
 
-from examples.atom_robot.controller_limits import (
+from examples.real_robot.atom_common.controller_limits import (
     apply_controller_limits,
     assert_controller_limits_unchanged,
     controller_bounds,
     read_controller_settings,
 )
-from examples.atom_robot.core import STATE_NAMES, RuntimeFault, actuator_targets
-from examples.atom_robot.home import home_targets, tracking_playback_scale
-from examples.atom_robot.native import NativeBridge
-from examples.atom_robot.torque import OuterTorqueCompensator
+from examples.real_robot.atom_common.core import STATE_NAMES, RuntimeFault, actuator_targets
+from examples.real_robot.atom_w_0759.home import home_targets, tracking_playback_scale
+from examples.real_robot.atom_w_0759.native import NativeBridge
+from examples.real_robot.atom_common.torque import OuterTorqueCompensator
 
 
 def fixture():
@@ -202,7 +202,7 @@ class ControllerLimitsTest(unittest.TestCase):
             with (
                 self.subTest(group=group),
                 patch(
-                    "examples.atom_robot.controller_limits.read_controller_settings",
+                    "examples.real_robot.atom_common.controller_limits.read_controller_settings",
                     return_value=changed,
                 ),
                 self.assertRaises(RuntimeFault),
@@ -211,7 +211,7 @@ class ControllerLimitsTest(unittest.TestCase):
             self.assertEqual(bridge.command_count, 0)
             self.assertIsNone(bridge.session)
         with patch(
-            "examples.atom_robot.controller_limits.read_controller_settings", return_value=snapshot
+            "examples.real_robot.atom_common.controller_limits.read_controller_settings", return_value=snapshot
         ):
             assert_controller_limits_unchanged(bridge.settings, pc1_ip="192.168.8.234")
 

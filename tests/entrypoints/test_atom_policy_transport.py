@@ -6,7 +6,7 @@ import numpy as np
 
 from dobot_nexus.inference.transport import msgpack_numpy
 from dobot_nexus.models.pi05.deploy.server import build_nexus_observation
-from examples.atom_robot.core import actuator_targets, state_vector
+from examples.real_robot.atom_common.core import actuator_targets, state_vector
 from tests.entrypoints.atom import test_atom_inference_pipeline_regressions as observations
 
 

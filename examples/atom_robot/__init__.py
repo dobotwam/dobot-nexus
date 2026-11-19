@@ -1,1 +1,1 @@
-"""Persistent ATOM robot runtime; hardware dependencies load only on startup."""
+"""Compatibility entry points for the ATOM examples in examples.real_robot."""

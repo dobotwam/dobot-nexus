@@ -17,7 +17,7 @@ WARMUP="${WARMUP:-1}"
 usage() {
   cat <<'EOF'
 Usage:
-  examples/pi05_real_robot/start_policy_server.sh MODEL_PATH [Pi0.5 server options]
+  examples/real_robot/start_policy_server.sh MODEL_PATH [Pi0.5 server options]
 
 MODEL_PATH may point to a Nexus run directory, checkpoints/latest.txt,
 step_XXXXXXXX Artifact directory, deployment/pytorch directory, or a file
@@ -71,7 +71,7 @@ fi
 
 resolved_output="$(
   PYTHONPATH="${LAUNCH_PYTHONPATH}" \
-    "${POLICY_PYTHON}" "${SCRIPT_DIR}/_runtime/resolve_model.py" "${MODEL_PATH}"
+    "${POLICY_PYTHON}" "${SCRIPT_DIR}/shared/resolve_model.py" "${MODEL_PATH}"
 )"
 mapfile -t resolved_paths <<< "${resolved_output}"
 if [[ "${#resolved_paths[@]}" -ne 2 ]]; then

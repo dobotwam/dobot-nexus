@@ -10,8 +10,8 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from examples.atom_robot import gripper_reset, home, run
-from examples.atom_robot.core import RuntimeFault
+from examples.real_robot.atom_w_0759 import gripper_reset, home, run
+from examples.real_robot.atom_common.core import RuntimeFault
 
 
 class FakeDevice:
@@ -156,7 +156,7 @@ class ResetContractTest(unittest.TestCase):
             child.wait.assert_called_once()
             self.assertEqual(launch.call_args.kwargs["pass_fds"], (42,))
             self.assertEqual(
-                launch.call_args.kwargs["cwd"], Path(gripper_reset.__file__).resolve().parents[2]
+                launch.call_args.kwargs["cwd"], Path(gripper_reset.__file__).resolve().parents[3]
             )
 
     def test_child_failure_or_timeout_never_reports_reset_success(self):
@@ -255,7 +255,7 @@ class HomeResetIntegrationTest(unittest.TestCase):
         )
         with (
             patch.object(run, "preflight_policy", return_value=({}, 50)),
-            patch("examples.atom_robot.validation.require_live_validation"),
+            patch("examples.real_robot.atom_w_0759.validation.require_live_validation"),
             patch.object(home, "return_home", return_value={"status": "home_fault"}) as returning,
             patch.object(run.mp, "get_context") as context,
             contextlib.redirect_stdout(io.StringIO()),

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from examples.pi05_real_robot._runtime.robot_contract import (
+from examples.real_robot.shared.robot_contract import (
     PolicyRobotContract,
     RobotLayout,
     load_robot_layout,
