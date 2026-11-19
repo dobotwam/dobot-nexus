@@ -249,9 +249,10 @@ class CameraRig:
                 self.errors.append(type(exc).__name__ + ": " + str(exc))
             self.stop.set()
 
-    def wait_ready(self, timeout=15):
+    def wait_ready(self, timeout=15, *, check_control=lambda: None):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            check_control()
             with self.lock:
                 if self.errors:
                     raise RuntimeFault("; ".join(self.errors))

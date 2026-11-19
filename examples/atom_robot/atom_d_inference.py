@@ -18,6 +18,7 @@ import numpy as np
 
 from dobot_nexus.inference.transport import msgpack_numpy
 from examples.atom_robot import atom_d_home as home
+from examples.atom_robot.atom_d_operator import CANCELLED, OperatorCancelled, operator_session
 from examples.atom_robot.atom_d_policy import policy_session
 from examples.atom_robot.controller_limits import controller_bounds, read_controller_settings
 from examples.atom_robot.core import (
@@ -93,7 +94,9 @@ class GraspTracker:
         return []
 
 
-def wait_for_hand_state(feedback, robot, rig, folder, sides, deadline, *, opening):
+def wait_for_hand_state(
+    feedback, robot, rig, folder, sides, deadline, *, opening, check_control=lambda: None
+):
     # PC1 retains the last motor and gripper references, as it does during inference.
     start = time.monotonic()
     stable_since = None
@@ -102,6 +105,7 @@ def wait_for_hand_state(feedback, robot, rig, folder, sides, deadline, *, openin
     positions = []
     dropped_sides = set()
     while time.monotonic() < min(start + 3.0, deadline):
+        check_control()
         if (folder / "stop").exists():
             raise InterruptedError("Operator stopped grasp verification")
         measure(feedback)
@@ -365,7 +369,18 @@ def save_images(path, images):
 
 
 def playback(
-    ws, feedback, rig, bounds, robot, limits, folder, report, full, initial_prediction, pool=None
+    ws,
+    feedback,
+    rig,
+    bounds,
+    robot,
+    limits,
+    folder,
+    report,
+    full,
+    initial_prediction,
+    pool=None,
+    check_control=lambda: None,
 ):
     kp, kd, rated, velocity = limits
     gate = ChunkGate()
@@ -402,6 +417,7 @@ def playback(
     pending = None
     ended = began
     while report["rows_sent"] < report["max_rows"]:
+        check_control()
         sequence += 1
         report["active_chunk"] = sequence
         report["executed_rows_by_chunk"].append(0)
@@ -529,6 +545,7 @@ def playback(
                         handoff["boundary_wait_ms"] = round(
                             1000 * (began + hand_command_time - ended), 2
                         )
+                check_control()
                 robot.command_joint_state(
                     command[1:8],
                     command[8:15],
@@ -567,6 +584,7 @@ def playback(
                         releasing,
                         began + report["max_wall_seconds"],
                         opening=True,
+                        check_control=check_control,
                     )
                     release.update(row=report["rows_sent"] - 1, chunk=sequence)
                     report["release_events"].append(release)
@@ -580,6 +598,7 @@ def playback(
                         sides,
                         began + report["max_wall_seconds"],
                         opening=False,
+                        check_control=check_control,
                     )
                     for side in sides:
                         grasps.grasp_checked[side] = True
@@ -663,10 +682,16 @@ def playback(
     return "episode_frame_limit" if full else "hardware_validation_completed"
 
 
-def run(args, folder, report):
+def run(args, folder, report, check_control=lambda: None):
+    def cancelled():
+        check_control()
+        return (folder / "stop").exists()
+
     with ExitStack() as stack:
         stack.enter_context(atom_d_control_lease())
-        ws = stack.enter_context(policy_session(args.weights, folder, report))
+        ws = stack.enter_context(
+            policy_session(args.weights, folder, report, check_control=check_control)
+        )
         if args.observation_npz:
             with np.load(args.observation_npz, allow_pickle=False) as sample:
                 state = sample["state"]
@@ -681,17 +706,18 @@ def run(args, folder, report):
             )
             return "recorded_observation_inferred"
 
-        os.environ["CYCLONEDDS_URI"] = home.DDS_URI
-        sys.path[:0] = [str(home.DRIVER), str(home.DRIVER / "robot_control_dds")]
+        check_control()
+        configure_sdk()
         bounds = controller_bounds(read_controller_settings(home.PC1))
         limits = hardware_limits()
         feedback = None if args.home_start else home.Feedback()
         rig = stack.enter_context(camera_rig())
-        rig.wait_ready()
+        rig.wait_ready(check_control=check_control)
+        check_control()
         robot = None
         if args.home_start:
             report["home_start"], feedback, robot = home.home_session(
-                execute=args.execute, cancelled=lambda: (folder / "stop").exists()
+                execute=args.execute, cancelled=cancelled
             )
             print("ATOM_HOME_START_RESULT", json.dumps(report["home_start"]), flush=True)
             if args.execute and report["home_start"]["status"] != "home_start_completed":
@@ -710,7 +736,9 @@ def run(args, folder, report):
             if time.monotonic() - cutoff >= 0.7:
                 raise RuntimeError("No fresh camera frames for the initial pose")
             time.sleep(0.01)
+        check_control()
         initial_prediction = predict(ws, feedback, rig, bounds)
+        check_control()
         chunk, points, state, images, info, _ = initial_prediction
         save_images(folder / "views.jpg", images)
         np.savez(folder / "prediction.npz", state=state, actions=chunk.actions, **images)
@@ -776,12 +804,18 @@ def run(args, folder, report):
                 args.full_episode,
                 initial_prediction,
                 pool,
+                check_control,
             )
         finally:
             try:
                 save_view(folder, "last.jpg", rig)
             except Exception as exc:
                 report["last_view_error"] = str(exc)
+
+
+def configure_sdk():
+    os.environ["CYCLONEDDS_URI"] = home.DDS_URI
+    sys.path[:0] = [str(home.DRIVER), str(home.DRIVER / "robot_control_dds")]
 
 
 def main(argv=None):
@@ -802,7 +836,11 @@ def main(argv=None):
         default="async",
         help="Full episodes prefetch the next chunk by default",
     )
-    parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Open the live console: Enter starts inference, h returns home, Ctrl+C exits",
+    )
     parser.add_argument(
         "--full-episode",
         action="store_true",
@@ -822,25 +860,51 @@ def main(argv=None):
     if args.execute and not args.site_clear:
         parser.error("Motion requires --site-clear")
 
+    if args.execute:
+        if not sys.stdin.isatty():
+            parser.error("Live execution requires an interactive terminal (use ssh -t)")
+        return operator_session(args, perform_trial)
+
     def interrupted(*_):
         raise InterruptedError("Trial interrupted")
 
     for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, interrupted)
+    return perform_trial(args, "inference", lambda: None)
+
+
+def perform_trial(args, operation, check_control):
     folder = (
         ROOT / "runs/atom_d_inference" / datetime.datetime.now().strftime("trial-%Y%m%d-%H%M%S-%f")
     )
     folder.mkdir(parents=True)
     report = dict(
         execute=args.execute,
-        home_start_requested=args.home_start,
+        operation=operation,
+        home_start_requested=args.home_start or operation == "home",
         rows_sent=0,
         feedback=[],
         folder=str(folder),
     )
     print("EPISODE_FOLDER", str(folder), flush=True)
     try:
-        report["status"] = run(args, folder, report)
+        check_control()
+        if operation == "home":
+            if not (args.execute and args.site_clear):
+                raise ValueError("Home-start requires --execute and --site-clear")
+            configure_sdk()
+
+            def cancelled():
+                check_control()
+                return (folder / "stop").exists()
+
+            with atom_d_control_lease():
+                report["home_start"] = home.run_home(execute=True, cancelled=cancelled)
+            report["status"] = report["home_start"]["status"]
+        else:
+            report["status"] = run(args, folder, report, check_control)
+    except OperatorCancelled as exc:
+        report.update(status="cancelled_by_operator", error=str(exc))
     except Exception as exc:
         report.update(status="stopped", error=str(exc))
     (folder / "result.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -849,7 +913,9 @@ def main(argv=None):
         json.dumps({k: v for k, v in report.items() if k not in ("feedback", "gripper_feedback")}),
         flush=True,
     )
-    return 2 if report["status"] == "stopped" else 0
+    if report["status"] == "cancelled_by_operator":
+        return CANCELLED
+    return 2 if report["status"] in ("stopped", "stopped_by_supervisor") else 0
 
 
 if __name__ == "__main__":

@@ -56,7 +56,7 @@ def _stop_child(process):
 
 
 @contextmanager
-def policy_session(weights, folder, report):
+def policy_session(weights, folder, report, *, check_control=lambda: None):
     supplied = Path(weights).expanduser().resolve(strict=True)
     model = resolve_model_path(supplied)
     if (
@@ -71,6 +71,7 @@ def policy_session(weights, folder, report):
     with ExitStack() as stack:
         available = []
         for port in PORTS:
+            check_control()
             try:
                 ws = _connect_policy(stack, port, model.artifact_dir, report)
             except ConnectionRefusedError:
@@ -107,6 +108,7 @@ def policy_session(weights, folder, report):
             "--no-torch-compile",
             "--no-cuda-graph",
         ]
+        check_control()
         with log.open("w") as output:
             process = subprocess.Popen(
                 command,
@@ -119,6 +121,7 @@ def policy_session(weights, folder, report):
         stack.callback(_stop_child, process)
         deadline = time.monotonic() + 180
         while process.poll() is None and time.monotonic() < deadline:
+            check_control()
             try:
                 ws = _connect_policy(stack, port, model.artifact_dir, report)
             except ConnectionRefusedError:

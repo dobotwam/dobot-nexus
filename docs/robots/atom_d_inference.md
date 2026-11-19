@@ -24,13 +24,21 @@ export ATOM_D_CONTROL_ROOT="$HOME/deploy-20261118/dobot-nexus"
 
 ## 运行
 
-**完整叠衣推理。** 在机器人已使能、衣物已铺好、现场清场后执行。程序先确认双夹爪张开，再回到采集首帧的双臂和头部姿态，随后依据新观测闭环执行。
+**完整叠衣推理。** 在机器人已使能、衣物已铺好、现场清场后执行。在交互终端启动后，看到 `WAITING` 即可按键。通过 SSH 运行单条远程命令时，使用 `ssh -t` 分配终端。
 
 ```bash
 ./examples/atom_robot/run_atom_d.sh \
   --weights "$HOME/step_00004000" \
   --home-start --execute --site-clear --full-episode
 ```
+
+| 按键 | 操作 |
+| --- | --- |
+| Enter | 在 `WAITING` 开始新一轮推理。带 `--home-start` 时，每轮先张开双夹爪、回到采集首帧姿态，再用新观测开始推理。 |
+| h | 在推理中停止下发策略动作，等该轮释放 SDK 控制权后执行 Home-start。在 `WAITING` 也可直接归位。归位会张开双爪，手中的衣物会被释放。 |
+| Ctrl+C | 在等待、推理或归位期间退出程序。退出时停止当前操作，不触发归位。 |
+
+一轮结束或手动归位完成后，程序重新显示 `WAITING`。运行中按的 Enter 不会排队触发下一轮。推理或归位报错时查看该次 `TRIAL_RESULT`，程序等待下一次按键。
 
 **只读检查。** 以下命令读取相机和 DDS，检查 Home-start 前置条件并执行一次模型预测。省略 `--execute` 时发送动作数为零。需要短程实机验证时，使用 `--home-start --execute --site-clear`，最多发送前 10 行动作。
 
@@ -54,7 +62,7 @@ export ATOM_D_CONTROL_ROOT="$HOME/deploy-20261118/dobot-nexus"
 - 动作的名义周期为 50 ms。程序在每行的第一个伺服周期发夹爪指令，双爪夹持力均设为 100%。抓取、释放后读取新观测再规划，持衣阶段每段最多推进 16 行。推理阶段的关节参考按 PC1 范围限幅，跟踪误差写入报告。
 - DH 反馈 `grip_state=3` 记录为 `GRIPPER_DROP_REPORTED`。单独收到此状态会继续运行，抓取和释放阶段仍按连续的新反馈与实测开度确认。SDK 故障、驱动告警、初始化状态变化、陈旧反馈及动作超时仍可中止执行。
 - 每轮输出路径打印在 `EPISODE_FOLDER`，默认位于 `runs/atom_d_inference/trial-*/`。`result.json` 记录权重、状态、已发送行数、抓取和释放事件。初次预测保存在 `prediction.npz`，闭环预测保存在 `chunk-*.npz`，现场图像保存在同一目录。启动的本地策略服务将日志写入 `policy.log`。
-- 终端 Ctrl-C 可中断当前运行，监督进程也可在该轮目录创建 `stop` 文件。完整推理最多运行 1600 行或 120 秒，并监测重复预测。`episode_frame_limit`、`wall_time_limit` 等状态表示退出原因，叠衣是否完成由现场或图像确认。
+- 监督进程可在该轮目录创建 `stop` 文件。完整推理最多运行 1600 行或 120 秒，并监测重复预测。`episode_frame_limit`、`wall_time_limit` 等状态表示退出原因，叠衣是否完成由现场或图像确认。
 
 ## 异步换段
 
