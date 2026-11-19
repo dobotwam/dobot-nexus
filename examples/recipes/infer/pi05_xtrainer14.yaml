@@ -1,0 +1,28 @@
+# XTrainer dual-arm deployment: left J1-J6, gripper, right J1-J6, gripper.
+# The Artifact owns normalization, camera mapping and the trained action horizon.
+extends: ../../configs/infer/pi05.yaml
+exp:
+  name: pi05_xtrainer14_infer
+  output_dir: runs/xtrainer_robot
+model:
+  artifact: ${env:PI05_ARTIFACT,/path/to/xtrainer14/artifact}
+  precision: bf16
+  inference_parameter_precision: bf16
+  state_dim: 14
+  action_dim: 14
+  action_horizon: null
+runtime:
+  device: cuda
+  autocast: auto
+  compile: true
+  compile_mode: legacy
+  compile_preserve_precision: true
+  cuda_graph: true
+inference:
+  num_steps: 10
+  # The standard hardware bridge uses ACTIONS_PER_RESPONSE on both peers.
+  # This policy setting alone does not configure the external robot processes.
+  execute_steps: 8
+server:
+  host: 127.0.0.1
+  port: 8000
