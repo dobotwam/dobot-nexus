@@ -16,9 +16,9 @@ BC/RECAP 使用 `compile_mode=legacy`，`configs/infer/pi05_memory.yaml` 使用 
 Memory 的资源准备、训练和历史服务见 [Memory 操作指南](../docs/pi05_memory.md)。
 CPU 推理配置见 [Pi0.5 部署说明](../docs/pi05_training.md#92-pytorch-推理)。
 ATOM W 0759 的 18 维相机、DDS、夹爪与只读验证入口见
-[ATOM 硬件示例](atom_robot/README.md)，对应推理配方位于 `recipes/infer/pi05_atom18.yaml`。
+[ATOM 硬件示例](real_robot/atom_w_0759/README.md)，对应推理配方位于 `recipes/infer/pi05_atom18.yaml`。
 
-ATOM D 的双臂叠衣入口为 `atom_robot/run_atom_d.sh`。权重选择、Home-start 和录制观测回放见 [ATOM D 部署指南](../docs/robots/atom_d_inference.md)。
+ATOM D 的双臂叠衣入口为 `real_robot/atom_d/run_atom_d.sh`。权重选择、Home-start 和录制观测回放见 [ATOM D 部署指南](../docs/robots/atom_d_inference.md)。
 
 ```text
 examples/
@@ -29,8 +29,7 @@ examples/
 ├── recipes/                 # 具体任务配方，通过 extends 复用通用模板
 ├── train.sh                 # 统一训练入口
 ├── infer.sh                 # 统一推理入口
-├── pi05_real_robot/         # Pi0.5 WebSocket 真机桥接与字段布局协议
-└── atom_robot/              # ATOM D / W 18 维硬件适配与执行验证
+└── real_robot/              # 真机部署入口、各机型执行代码和共享协议
 ```
 
 模块测试见 [`tests/README.md`](../tests/README.md)。性能、精度对齐和 smoke 实验保存在
@@ -111,4 +110,4 @@ examples/infer.sh \
 
 Pi0.5 真机使用
 WebSocket 链路，入口位于
-[`pi05_real_robot/`](pi05_real_robot/README.md)。
+[真机部署索引](real_robot/README.md)。

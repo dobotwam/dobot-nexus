@@ -94,9 +94,9 @@ cd dobot-nexus
 | Pi0 | `examples/configs/train/pi0.yaml` |
 | 训练 | `examples/train.sh` |
 | 离线推理 / HTTP 服务 | `examples/infer.sh` |
-| Pi0.5 真机 WebSocket 链路 | `examples/pi05_real_robot/` |
+| 真机部署入口 | [按机型选择启动命令](examples/real_robot/README.md) |
 | ATOM D / 18 维双臂叠衣 | [真机部署、Home-start 和完整推理](docs/robots/atom_d_inference.md) |
-| ATOM W 0759 / 18 维硬件适配 | [`examples/atom_robot/`](examples/atom_robot/README.md) |
+| ATOM W 0759 / 18 维硬件适配 | [`examples/real_robot/atom_w_0759/`](examples/real_robot/atom_w_0759/README.md) |
 
 训练和推理通过 `model.target` 选择模型，并使用同一份 Artifact 配置与数据处理资产。Pi0.5 使用仓库内置 Torch core，Pi0 使用独立的模型算子。
 
@@ -114,8 +114,8 @@ cd dobot-nexus
 | [任务配置样例](examples/recipes/README.md) | USB、按钮、KBD 等已有任务配方 |
 | [Memory 指南](docs/pi05_memory.md) | 历史特征准备、训练和历史服务 |
 | [RECAP / ACP 指南](docs/recap/README.md) | 离线 Value、优势标注和条件策略 |
-| [真机启动器参数](examples/pi05_real_robot/README.md) | BC、RECAP、Memory 的参数和通信约定 |
-| [ATOM 18 维部署](examples/atom_robot/README.md) | SDK、相机、头部模式、只读验证与推理 recipe |
+| [真机启动器参数](examples/real_robot/dobot_dual_arm_14d/README.md) | BC、RECAP、Memory 的参数和通信约定 |
+| [ATOM 18 维部署](examples/real_robot/atom_w_0759/README.md) | SDK、相机、头部模式、只读验证与推理 recipe |
 | [全部用户样例](examples/README.md) | 各模型的训练、推理和服务入口 |
 
 ## 开发者入口

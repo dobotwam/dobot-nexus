@@ -93,7 +93,7 @@ lower_target = action[21:24]
 - 灵巧手：每只手的关节数、顺序和单位需按该末端协议定义，不能套用 DH 的单开度字段。
 
 本仓库提供 Dobot 双臂 14 维硬件入口、可配置维度的策略通信桥，以及
-[ATOM W 0759 的 18 维硬件示例](../../examples/atom_robot/README.md)。
+[ATOM W 0759 的 18 维硬件示例](../../examples/real_robot/atom_w_0759/README.md)。
 18 维示例默认保持头部，显式 `--head-mode policy` 才执行预测头部动作；
 Home 流程会独立移动头部。该示例不控制底盘和下肢，也不接收 24 维模型输出。
 本文规定 ATOM-DH 24 维字段与适配边界；完整 ATOM 24 维硬件执行入口需接入对应

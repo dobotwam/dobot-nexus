@@ -233,7 +233,7 @@ examples/train.sh                              统一训练入口
 examples/infer.sh                              离线推理和 Nexus HTTP 服务入口
 examples/configs/infer/pi05.yaml              Pi0.5 标准推理配置
 src/dobot_nexus/models/pi05/                   Pi0.5 模型、数据、checkpoint 和部署实现
-examples/pi05_real_robot/                      WebSocket 真机链路
+examples/real_robot/dobot_dual_arm_14d/                      WebSocket 真机链路
 ```
 
 用户通过任务 recipe 继承通用模板并覆盖任务字段。具体例子和 Memory 资源准备入口见
@@ -319,7 +319,7 @@ CUDA wheel 来源取决于 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL` 或基础镜像
 
 训练期间需要访问原始 LeRobot 数据，Memory 保存时还要复制并校验冻结视觉权重。保存 Artifact
 无需再读取 base checkpoint；Torch policy 部署只需完整 Artifact，不需要原始数据集或 base。
-真机 `examples/pi05_real_robot/_runtime/dobot_dual_arm_14d.py`、
+真机 `examples/real_robot/dobot_dual_arm_14d/_runtime/dobot_dual_arm_14d.py`、
 `dobot_environment`、机器人 SDK/驱动和设备权限属于机器人项目的外部边界，不属于 Nexus GPU
 policy 的 pip 闭包。
 
@@ -885,7 +885,7 @@ examples/infer.sh \
 恢复；内部 `model_action_dim` 同样从 Artifact 恢复。显式覆盖必须与训练值一致。
 不使用 Artifact、直接指定 `model.checkpoint` 时，必须明确填写公共维度、动作长度和数据资产；
 内部边界省略时为 32。直接权重路径不含任务语义，推荐使用完整 Artifact。
-policy 服务按恢复的维度接收状态并返回动作。`examples/pi05_real_robot/` 的硬件客户端要求
+policy 服务按恢复的维度接收状态并返回动作。`examples/real_robot/dobot_dual_arm_14d/` 的硬件客户端要求
 14 维，会在 warmup 和机器人连接前拒绝不匹配的服务；KBD 真机需要匹配其硬件协议的客户端。
 
 标准 `examples/configs/infer/pi05.yaml` 使用 `legacy` 数值策略，默认开启编译与 CUDA Graph。
@@ -969,11 +969,11 @@ examples/infer.sh \
 
 ### 9.4 Torch 真机部署
 
-`examples/pi05_real_robot/start_policy_server.sh` 使用 Torch 后端并读取 Artifact 的
+`examples/real_robot/start_policy_server.sh` 使用 Torch 后端并读取 Artifact 的
 `files.weights`。训练环境额外安装 `.[websocket]` 的 WebSocket/msgpack 协议依赖即可部署。
 
 双臂真机使用 WebSocket/msgpack_numpy 链路。完整进程拓扑、
-启动、dry-run 和正式执行参数见 [`examples/pi05_real_robot/README.md`](../examples/pi05_real_robot/README.md)。
+启动、dry-run 和正式执行参数见 [`examples/real_robot/dobot_dual_arm_14d/README.md`](../examples/real_robot/dobot_dual_arm_14d/README.md)。
 
 ## 10. 正式训练验收
 

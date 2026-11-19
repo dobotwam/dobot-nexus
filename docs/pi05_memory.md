@@ -135,7 +135,7 @@ step_00002000/
 
 ```bash
 POLICY_PYTHON="$NEXUS_PYTHON" GPU=0 POLICY_PORT=8001 \
-bash examples/pi05_real_robot/start_policy_server.sh \
+bash examples/real_robot/start_policy_server.sh \
   runs/pi05_memory_my_task/checkpoints/latest_deployment.txt
 ```
 
@@ -162,8 +162,8 @@ Memory 的连续推理使用下节的历史桥接链路；普通单帧 `examples
 
 ### 机器人主机
 
-完整复制 `examples/pi05_real_robot/`，保留 `_runtime/`，在复制目录的父目录执行。
-机器人使用已有硬件环境，串口、机械臂 IP 和相机序列号按[真机部署说明](../examples/pi05_real_robot/README.md)配置。
+完整复制 `examples/real_robot/dobot_dual_arm_14d/`，保留 `_runtime/`，在复制目录的父目录执行。
+机器人使用已有硬件环境，串口、机械臂 IP 和相机序列号按[真机部署说明](../examples/real_robot/dobot_dual_arm_14d/README.md)配置。
 以下以 **30 Hz、顶部全图**的按钮任务为例；任务文本、频率和裁剪应与训练数据一致。
 
 ```bash
@@ -175,7 +175,7 @@ export BRIDGE_MODE=memory
 export STEP_DT=0.0333333333 CONTROL_FREQUENCY=30
 export CAMERA_FPS=30 HISTORY_FPS=30
 export ACTIONS_PER_RESPONSE=8 ROBOT_PORT=12006
-ROBOT_EXECUTE=0 bash pi05_real_robot/start_dobot_dual_arm_14d_server.sh
+ROBOT_EXECUTE=0 bash dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 ```
 
 此时采集图像和状态、接收预测，不执行模型动作。若训练使用顶部裁剪，设置
@@ -189,7 +189,7 @@ ROBOT_EXECUTE=0 bash pi05_real_robot/start_dobot_dual_arm_14d_server.sh
 CLIENT_PYTHON="$NEXUS_PYTHON" \
 BRIDGE_MODE=memory HISTORY_FPS=30 ACTIONS_PER_RESPONSE=8 \
 ROBOT_HOST=ROBOT_IP ROBOT_PORT=12006 POLICY_HOST=127.0.0.1 POLICY_PORT=8001 \
-bash examples/pi05_real_robot/start_robot_client.sh
+bash examples/real_robot/dobot_dual_arm_14d/start_robot_client.sh
 ```
 
 两端必须设置 `BRIDGE_MODE=memory`，并使用相同的 `HISTORY_FPS` 和 `ACTIONS_PER_RESPONSE`。
@@ -201,7 +201,7 @@ bash examples/pi05_real_robot/start_robot_client.sh
 结束 dry-run 后，停止 client 和 robot-server。保留机器人端环境变量，重新启动 robot-server：
 
 ```bash
-ROBOT_EXECUTE=1 bash pi05_real_robot/start_dobot_dual_arm_14d_server.sh
+ROBOT_EXECUTE=1 bash dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 ```
 
 再执行上面的 client 命令连接。默认启动时确认并回 Home，动作执行需要人工确认。

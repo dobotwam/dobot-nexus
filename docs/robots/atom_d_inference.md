@@ -27,7 +27,7 @@ export ATOM_D_CONTROL_ROOT="$HOME/deploy-20261118/dobot-nexus"
 **完整叠衣推理。** 在机器人已使能、衣物已铺好、现场清场后执行。在交互终端启动后，看到 `WAITING` 即可按键。通过 SSH 运行单条远程命令时，使用 `ssh -t` 分配终端。
 
 ```bash
-./examples/atom_robot/run_atom_d.sh \
+./examples/real_robot/atom_d/run_atom_d.sh \
   --weights "$HOME/step_00004000" \
   --home-start --execute --site-clear --full-episode
 ```
@@ -43,13 +43,13 @@ export ATOM_D_CONTROL_ROOT="$HOME/deploy-20261118/dobot-nexus"
 **只读检查。** 以下命令读取相机和 DDS，检查 Home-start 前置条件并执行一次模型预测。省略 `--execute` 时发送动作数为零。需要短程实机验证时，使用 `--home-start --execute --site-clear`，最多发送前 10 行动作。
 
 ```bash
-./examples/atom_robot/run_atom_d.sh --weights "$HOME/step_00004000" --home-start
+./examples/real_robot/atom_d/run_atom_d.sh --weights "$HOME/step_00004000" --home-start
 ```
 
 **录制观测回放。** 选取任一历史运行目录中的 `prediction.npz`，设置 `OBSERVATION_NPZ` 为其路径。回放直接读取文件中的 `state`、`top_camera`、`left_camera`、`right_camera`，仅启动模型链路。
 
 ```bash
-./examples/atom_robot/run_atom_d.sh \
+./examples/real_robot/atom_d/run_atom_d.sh \
   --weights "$HOME/step_00004000" --observation-npz "$OBSERVATION_NPZ"
 ```
 
@@ -58,7 +58,7 @@ export ATOM_D_CONTROL_ROOT="$HOME/deploy-20261118/dobot-nexus"
 ## 动作和日志
 
 - 状态和每行动作均为 18 维，顺序为左臂 7 轴、左爪开度、右臂 7 轴、右爪开度、头部 yaw/pitch。关节单位为弧度，夹爪开度 0 为关、1 为开。腰部保持，模型每次预测 50 行。
-- Home-start 同时保存了示教首帧的实测关节位置和对应电机指令。初始姿态来自 `episode_000000.parquet` 第 0 帧。[Home-start 配置](../../examples/atom_robot/config/atom_d_home.json)
+- Home-start 同时保存了示教首帧的实测关节位置和对应电机指令。初始姿态来自 `episode_000000.parquet` 第 0 帧。[Home-start 配置](../../examples/real_robot/atom_d/config/atom_d_home.json)
 - 动作的名义周期为 50 ms。程序在每行的第一个伺服周期发夹爪指令，双爪夹持力均设为 100%。抓取、释放后读取新观测再规划，持衣阶段每段最多推进 16 行。推理阶段的关节参考按 PC1 范围限幅，跟踪误差写入报告。
 - DH 反馈 `grip_state=3` 记录为 `GRIPPER_DROP_REPORTED`。单独收到此状态会继续运行，抓取和释放阶段仍按连续的新反馈与实测开度确认。SDK 故障、驱动告警、初始化状态变化、陈旧反馈及动作超时仍可中止执行。
 - 每轮输出路径打印在 `EPISODE_FOLDER`，默认位于 `runs/atom_d_inference/trial-*/`。`result.json` 记录权重、状态、已发送行数、抓取和释放事件。初次预测保存在 `prediction.npz`，闭环预测保存在 `chunk-*.npz`，现场图像保存在同一目录。启动的本地策略服务将日志写入 `policy.log`。

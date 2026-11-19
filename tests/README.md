@@ -69,6 +69,6 @@ CPU 检查不能证明 GPU 数值一致、推理性能或真机成功率。
 
 开发用的实模 smoke、多进程训练、FSDP 精度对照、GPU benchmark、真机实验脚本/报告放在
 Git 忽略的 `local_script/`。
-可供用户运行的 ATOM 只读部署验证流程位于 `examples/atom_robot/`，运行报告写入
+可供用户运行的 ATOM 只读部署验证流程位于 `examples/real_robot/atom_w_0759/`，运行报告写入
 Git 忽略的 `runs/atom_robot/`；它不在本仓库 CPU 测试中连接硬件。
 正式源码和测试不得反向导入这些工具；共享协议的每次变更仍须增加相应 CPU 契约测试。

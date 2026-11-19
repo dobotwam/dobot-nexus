@@ -40,18 +40,18 @@ data:
 `legacy` 编译和 CUDA Graph。它不定义机型专用模型，也不改写训练时的字段与归一化。
 
 ```bash
-examples/pi05_real_robot/start_policy_server.sh /path/to/atom18/artifact \
+examples/real_robot/start_policy_server.sh /path/to/atom18/artifact \
   --config examples/recipes/infer/pi05_atom18.yaml
 ```
 
-相机、SDK、头部保持和完整动作块执行由 [ATOM 示例](../atom_robot/README.md) 管理。
+相机、SDK、头部保持和完整动作块执行由 [ATOM 示例](../real_robot/atom_w_0759/README.md) 管理。
 本配方的动作长度不由 `inference.execute_steps` 裁剪。完整步骤及两机认证配置见该示例。
 
 ## XTrainer 14 维部署
 
 [infer/pi05_xtrainer14.yaml](infer/pi05_xtrainer14.yaml) 使用现有双臂 14 维硬件入口。
 布局为左臂 J1–J6、左夹爪、右臂 J1–J6、右夹爪，夹爪索引为 6、13；
-字段定义复用 [dual6.json](../pi05_real_robot/layouts/dual6.json)。
+字段定义复用 [dual6.json](../real_robot/shared/layouts/dual6.json)。
 该布局对应双 Nova 2 机械臂与双夹爪的 XTrainer 配置，硬件规格参考
 [Dobot 官方介绍](https://www.dobot-robots.com/insights/news/dobot-x-trainer.html)。
 
@@ -62,7 +62,7 @@ examples/pi05_real_robot/start_policy_server.sh /path/to/atom18/artifact \
 精度保护和 CUDA Graph。现有硬件桥使用自己的 ROI/缩放流程，不采用 ATOM 的填充预处理。
 
 ```bash
-examples/pi05_real_robot/start_policy_server.sh /path/to/xtrainer14/artifact \
+examples/real_robot/start_policy_server.sh /path/to/xtrainer14/artifact \
   --config examples/recipes/infer/pi05_xtrainer14.yaml
 ```
 
@@ -74,7 +74,7 @@ examples/pi05_real_robot/start_policy_server.sh /path/to/xtrainer14/artifact \
 
 两端认证、硬件地址、相机参数、启动顺序、`model` 控制权交接及 dry-run 流程见
 [三进程部署指南](../../docs/getting_started/05_deployment.md)和
-[真机启动器参数](../pi05_real_robot/README.md)。本配方面向 Pi0.5 BC，不替代 Memory 的部署配置。
+[真机启动器参数](../real_robot/dobot_dual_arm_14d/README.md)。本配方面向 Pi0.5 BC，不替代 Memory 的部署配置。
 
 ## USB BC 与 RECAP
 

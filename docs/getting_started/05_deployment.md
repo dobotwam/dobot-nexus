@@ -27,7 +27,7 @@ robot-server  ←──── TCP 12006 ────→  robot-client  ←──
 | robot-server | 机器人主机 | 硬件项目的 Python 环境 |
 
 GPU 主机保留 Nexus 仓库和完整 Artifact。机器人主机可以使用完整仓库，也可以完整复制
-`examples/pi05_real_robot/`，包括 `_runtime/`。以下机器人命令采用完整仓库路径。
+`examples/real_robot/dobot_dual_arm_14d/`，包括 `_runtime/`。以下机器人命令采用完整仓库路径。
 
 ## 5.2 终端 A，在 GPU 主机启动策略服务
 
@@ -37,7 +37,7 @@ export PI05_ARTIFACT=/path/to/run/checkpoints/step_00010000
 
 POLICY_PYTHON="$PWD/.venvs/pi05/bin/python" \
 GPU=0 POLICY_PORT=8000 \
-bash examples/pi05_real_robot/start_policy_server.sh \
+bash examples/real_robot/start_policy_server.sh \
   "$PI05_ARTIFACT" --no-torch-compile --no-cuda-graph
 ```
 
@@ -116,7 +116,7 @@ export RIGHT_TELOP_PORT=/dev/YOUR_RIGHT_TELEOP
 
 ```bash
 ROBOT_EXECUTE=0 HOME_ON_START=0 \
-bash examples/pi05_real_robot/start_dobot_dual_arm_14d_server.sh
+bash examples/real_robot/dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 ```
 
 此模式仍会初始化硬件环境、读取相机和机器人状态，模型动作路径通过日志显示预测值。
@@ -134,7 +134,7 @@ BRIDGE_MODE=standard \
 ROBOT_HOST=YOUR_ROBOT_HOST_IP ROBOT_PORT=12006 \
 POLICY_HOST=127.0.0.1 POLICY_PORT=8000 \
 ACTIONS_PER_RESPONSE=8 \
-bash examples/pi05_real_robot/start_robot_client.sh
+bash examples/real_robot/dobot_dual_arm_14d/start_robot_client.sh
 ```
 
 客户端从机器人接收观测，将任务和图像发给策略服务，再把动作发回机器人。
@@ -152,7 +152,7 @@ bash examples/pi05_real_robot/start_robot_client.sh
 
 ```bash
 ROBOT_EXECUTE=1 HOME_ON_START=0 CONFIRM_EACH_ACTION=1 \
-bash examples/pi05_real_robot/start_dobot_dual_arm_14d_server.sh
+bash examples/real_robot/dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 ```
 
 `HOME_ON_START=0` 采用当前姿态开始，按训练任务要求手动准备初始场景。
@@ -174,4 +174,4 @@ bash examples/pi05_real_robot/start_dobot_dual_arm_14d_server.sh
 
 这套 TCP/WebSocket 链路用于受控机器人内网。TCP 使用带认证的 msgpack，机器人与桥接端需设置相同的 `NEXUS_ROBOT_TOKEN`。
 WebSocket 服务部署要求见安全说明。
-BC/RECAP/Memory 的完整参数、Home 控制和历史协议见[真机启动器参考](../../examples/pi05_real_robot/README.md)。
+BC/RECAP/Memory 的完整参数、Home 控制和历史协议见[真机启动器参考](../../examples/real_robot/dobot_dual_arm_14d/README.md)。
