@@ -2,9 +2,13 @@
 
 硬件入口按本体与维度命名：`start_dobot_dual_arm_14d_server.sh` 适配 Dobot 双臂，
 每臂六关节加一个夹爪。策略服务与通信客户端按 Artifact 处理维度；其他本体需实现
-对应的状态读取和动作执行，字段与单位见 [ATOM W + DH 24 维协议](../../docs/robots/atom_dh_24d.md)。
+对应的状态读取和动作执行，字段与单位见 [ATOM W + DH 24 维协议](../../../docs/robots/atom_dh_24d.md)。
+XTrainer 双臂 14 维的 Pi0.5 BC 推理配方见
+[pi05_xtrainer14.yaml](../../recipes/infer/pi05_xtrainer14.yaml)，硬件端使用本目录的机器人服务。
+ATOM W 0759 的 18 维独立硬件入口见 [ATOM 示例](../atom_w_0759/README.md)。
+该入口直接访问策略服务，使用共享的字段布局契约，不经过双臂 TCP 桥。
 
-第一次联调请按[三进程真机部署](../../docs/getting_started/05_deployment.md)操作。
+第一次联调请按[三进程真机部署](../../../docs/getting_started/05_deployment.md)操作。
 新手指南以 BC 为例，分别说明两台机器的环境、启动顺序、dry-run 与人工确认执行。
 本文保留 BC、RECAP、Memory 的完整启动参数和通信约定。
 
@@ -17,22 +21,10 @@ start_dobot_dual_arm_14d_server.sh  ← TCP →  start_robot_client.sh  ← WebS
 DobotEnvironment :12006          bridge client                       Torch policy :8000
 ```
 
-```text
-pi05_real_robot/
-├── README.md
-├── start_policy_server.sh       # 从训练 Artifact 启动策略
-├── start_dobot_dual_arm_14d_server.sh        # 机器人采集、控制和动作执行
-├── start_robot_client.sh        # GPU 主机上的通信桥接
-└── _runtime/                    # 启动器使用的内部实现
-    ├── dobot_dual_arm_14d.py    # Dobot 双臂 14 维 SDK、操作控制及通信桥
-    ├── dimensions.py           # 状态/动作维度握手与校验
-    ├── memory.py               # 连续历史桥接，复用 dobot_dual_arm_14d.py
-    ├── history.py              # 30 Hz 历史采集、无损传输与 ACK
-    └── resolve_model.py        # Artifact 路径和部署资产检查
-```
+GPU 主机使用 [策略启动器](../start_policy_server.sh) 加载 Artifact。此目录包含机器人服务、通信客户端和两者使用的 `_runtime/`，可单独复制到机器人。标准桥与 Memory 桥分别由 `dobot_dual_arm_14d.py` 和 `memory.py` 实现。
 
 GPU 主机的 client 和 policy 使用同一个 Nexus 环境、分别运行进程。机器人主机需要自己的
-硬件环境，并完整复制本目录，包括 `_runtime/`。模型和通信 client 在 GPU 主机运行。
+硬件环境。模型和通信 client 在 GPU 主机运行。
 
 ## 1. GPU 主机：启动 policy
 
@@ -42,7 +34,7 @@ GPU 主机的 client 和 policy 使用同一个 Nexus 环境、分别运行进�
 ```bash
 POLICY_PYTHON=/path/to/pi05/bin/python \
 GPU=4 POLICY_PORT=8001 \
-bash examples/pi05_real_robot/start_policy_server.sh \
+bash examples/real_robot/start_policy_server.sh \
   /path/to/run/checkpoints/step_00002000
 ```
 
@@ -86,7 +78,7 @@ export BRIDGE_MODE=memory
 export STEP_DT=0.0333333333 CONTROL_FREQUENCY=30
 export CAMERA_FPS=30 HISTORY_FPS=30
 export ACTIONS_PER_RESPONSE=8
-bash pi05_real_robot/start_dobot_dual_arm_14d_server.sh
+bash dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 ```
 
 `ENV_SRC`、`TASK`、`TOP_ROI_XYWH` 必须显式设置。裁剪也可以写成
@@ -102,10 +94,17 @@ bash pi05_real_robot/start_dobot_dual_arm_14d_server.sh
 | 遥操作串口 | `LEFT_TELOP_PORT`、`RIGHT_TELOP_PORT` |
 
 默认 `ROBOT_EXECUTE=0`，采集观测并接收预测，不调用 `robot.step()`。
+服务启动后默认处于 `positioning_paused`。保持机器人服务在前台交互终端运行，完成姿态准备后，
+在**运行该服务的终端**输入 `model` 并按 Enter；这是服务交互命令，不是 shell 命令。
+确认 `[control-state]` 日志中的 `state` 为 `model_waiting`，再启动第 3 节的 client。
+客户端认证成功后变为 `model_control`。dry-run 与执行模式都需要交接。
+如果开启了手动跟随，先输入 `adjust-left-on`、`adjust-right-on`，各按 Enter，
+关闭两臂跟随后再输入 `model`。
+
 使用同一组环境变量开启执行：
 
 ```bash
-ROBOT_EXECUTE=1 bash pi05_real_robot/start_dobot_dual_arm_14d_server.sh
+ROBOT_EXECUTE=1 bash dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 ```
 
 默认 `HOME_ON_START=1`：启用执行后，启动时确认并回 Home；设为 `0` 可保留当前位置。
@@ -118,14 +117,15 @@ ROBOT_EXECUTE=1 bash pi05_real_robot/start_dobot_dual_arm_14d_server.sh
 
 ## 3. GPU 主机：启动 client
 
-在另一个终端连接机器人与本机 policy：
+在另一个终端配置与机器人端相同的 `NEXUS_ROBOT_TOKEN`，确认机器人已进入
+`model_waiting`，再连接机器人与本机 policy：
 
 ```bash
 CLIENT_PYTHON=/path/to/pi05/bin/python \
 BRIDGE_MODE=memory HISTORY_FPS=30 \
 ROBOT_HOST=ROBOT_IP POLICY_HOST=127.0.0.1 POLICY_PORT=8001 \
 ACTIONS_PER_RESPONSE=8 \
-bash examples/pi05_real_robot/start_robot_client.sh
+bash examples/real_robot/dobot_dual_arm_14d/start_robot_client.sh
 ```
 
 - Memory 必须在 robot-server 和 client 两端都设置 `BRIDGE_MODE=memory`。
@@ -135,6 +135,10 @@ bash examples/pi05_real_robot/start_robot_client.sh
 - client 默认采用机器人发送的任务；`TASK_OVERRIDE` 可显式覆盖。
 - 机器人 TCP 默认端口为 `12006`，用 `ROBOT_PORT` 修改；policy 端口用 `POLICY_PORT` 修改。
 - 其他参数可直接追加到启动命令；`BRIDGE_SCRIPT` 可指定自定义通信脚本。
+
+客户端断开、任务结束或重启 robot-server 后，机器人恢复 `positioning_paused`。
+重新连接前需在机器人服务终端再次输入 `model`，确认 `model_waiting` 后重启 client。
+提前连接被拒绝时也按此顺序重试；Memory 重连会开始新的历史会话。
 
 ## Memory 与通信约定
 
@@ -154,7 +158,7 @@ client 只截取前 N 个时间步，完整保留所有动作维度；不要再�
 ```bash
 STATE_DIM=18 ACTION_DIM=18 \
 ROBOT_HOST=ROBOT_IP POLICY_HOST=127.0.0.1 POLICY_PORT=8001 \
-bash examples/pi05_real_robot/start_robot_client.sh
+bash examples/real_robot/dobot_dual_arm_14d/start_robot_client.sh
 ```
 
 `STATE_DIM` / `ACTION_DIM`（或 `--state-dim` / `--action-dim`）仅核对模型维度，不修改模型。

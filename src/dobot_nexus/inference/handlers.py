@@ -21,11 +21,16 @@ class PredictionHandler:
         self._request_index = 0
         self._lock = threading.Lock()
 
-    def __call__(self, observation):
-        with self._lock:
-            index = self._request_index
-            self._request_index += 1
-        seed = self.seed + index if self.vary_seed else self.seed
+    def __call__(self, observation, *, replay_seed=None):
+        if replay_seed is None:
+            with self._lock:
+                index = self._request_index
+                self._request_index += 1
+            seed = self.seed + index if self.vary_seed else self.seed
+        else:
+            if type(replay_seed) is not int or not -(2**63) <= replay_seed < 2**64:
+                raise ValueError("replay_seed must be a Torch integer seed")
+            seed = replay_seed
         started = time.monotonic()
         output = self.policy.predict_chunk(
             observation, SamplingOptions(seed=seed, num_steps=self.num_steps)

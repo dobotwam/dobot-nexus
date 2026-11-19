@@ -34,7 +34,7 @@ src/dobot_nexus/
 | `examples/configs/{train,infer}/` | 通用配置模板 |
 | `examples/recipes/` | 按任务覆盖模板的完整示例 |
 | `examples/{train,infer}.sh` | 统一启动入口 |
-| `examples/pi05_real_robot/` | 三个启动脚本与 `_runtime/` 下的机器人通信实现 |
+| `examples/real_robot/dobot_dual_arm_14d/` | 14 维机器人服务、通信客户端及其运行代码 |
 | `scripts/env/` | 按模型创建环境、检查安装及可选服务依赖 |
 | `data_processing/` | 独立 PKL → LeRobot 转换，保留可扩展数据字段 |
 | `tests/` | CPU 模块、契约、命令入口检查 |
@@ -153,9 +153,9 @@ GPU 服务器：robot-client → WebSocket policy → Torch 模型
 机器人侧：  robot-server → 环境 SDK、相机、机械臂和夹爪
 ```
 
-三个公开启动入口保存在 `examples/pi05_real_robot/`，Python 实现在 `_runtime/`。
+共享策略入口位于 `examples/real_robot/start_policy_server.sh`，14 维机器人服务和客户端位于 `examples/real_robot/dobot_dual_arm_14d/`。
 机器人项目、串口/相机驱动和硬件配置属于外部环境。实际命令与执行开关见
-[真机部署](../examples/pi05_real_robot/README.md)。
+[真机部署](../examples/real_robot/dobot_dual_arm_14d/README.md)。
 
 ## Pi0.5 的内部边界
 

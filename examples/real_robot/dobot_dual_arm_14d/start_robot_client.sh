@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+SCRIPT_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 BRIDGE_MODE="${BRIDGE_MODE:-standard}"
 case "${BRIDGE_MODE}" in

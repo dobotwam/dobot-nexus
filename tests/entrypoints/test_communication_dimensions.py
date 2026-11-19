@@ -12,8 +12,8 @@ import numpy as np
 from dobot_nexus.core.contracts import PolicySpec
 from dobot_nexus.inference.transport.websocket import WebsocketPolicyServer
 from dobot_nexus.models.pi05.deploy import server as deployment
-from examples.pi05_real_robot._runtime import memory, dobot_dual_arm_14d as bridge
-from examples.pi05_real_robot._runtime.dimensions import CommunicationSpec
+from examples.real_robot.dobot_dual_arm_14d._runtime import memory, dobot_dual_arm_14d as bridge
+from examples.real_robot.dobot_dual_arm_14d._runtime.dimensions import CommunicationSpec
 
 
 def observation(state_dim):

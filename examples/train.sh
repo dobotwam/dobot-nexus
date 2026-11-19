@@ -59,6 +59,11 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1 && [[ ! -x "${PYTHON_BIN}" ]]; t
   printf 'Python executable was not found: %s\n' "${PYTHON_BIN}" >&2
   exit 2
 fi
+# Fix the caller's executable before cd, without resolving virtualenv symlinks.
+PYTHON_BIN="$(command -v "${PYTHON_BIN}" || printf '%s' "${PYTHON_BIN}")"
+if [[ "${PYTHON_BIN}" != /* ]]; then
+  PYTHON_BIN="${INVOCATION_DIR}/${PYTHON_BIN}"
+fi
 
 if [[ "${CONFIG}" != /* ]]; then
   if [[ -f "${INVOCATION_DIR}/${CONFIG}" ]]; then

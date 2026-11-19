@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+INVOCATION_DIR="$(pwd)"
 
 POLICY_PYTHON="${POLICY_PYTHON:-python}"
 TOKENIZER_PATH="${TOKENIZER_PATH:-${OPENPI_TOKENIZER_PATH:-}}"
@@ -17,7 +18,7 @@ WARMUP="${WARMUP:-1}"
 usage() {
   cat <<'EOF'
 Usage:
-  examples/pi05_real_robot/start_policy_server.sh MODEL_PATH [Pi0.5 server options]
+  examples/real_robot/start_policy_server.sh MODEL_PATH [Pi0.5 server options]
 
 MODEL_PATH may point to a Nexus run directory, checkpoints/latest.txt,
 step_XXXXXXXX Artifact directory, deployment/pytorch directory, or a file
@@ -50,6 +51,11 @@ if ! command -v "${POLICY_PYTHON}" >/dev/null 2>&1 && [[ ! -x "${POLICY_PYTHON}"
   echo "POLICY_PYTHON was not found or is not executable: ${POLICY_PYTHON}" >&2
   exit 1
 fi
+# Fix the caller's executable before cd, without resolving virtualenv symlinks.
+POLICY_PYTHON="$(command -v "${POLICY_PYTHON}" || printf '%s' "${POLICY_PYTHON}")"
+if [[ "${POLICY_PYTHON}" != /* ]]; then
+  POLICY_PYTHON="${INVOCATION_DIR}/${POLICY_PYTHON}"
+fi
 if [[ -n "${TOKENIZER_PATH}" && ! -f "${TOKENIZER_PATH}" ]]; then
   echo "Pi0.5 tokenizer was not found: ${TOKENIZER_PATH}" >&2
   exit 1
@@ -71,7 +77,7 @@ fi
 
 resolved_output="$(
   PYTHONPATH="${LAUNCH_PYTHONPATH}" \
-    "${POLICY_PYTHON}" "${SCRIPT_DIR}/_runtime/resolve_model.py" "${MODEL_PATH}"
+    "${POLICY_PYTHON}" "${SCRIPT_DIR}/shared/resolve_model.py" "${MODEL_PATH}"
 )"
 mapfile -t resolved_paths <<< "${resolved_output}"
 if [[ "${#resolved_paths[@]}" -ne 2 ]]; then

@@ -3,7 +3,7 @@
 Pi0 的入口是 `dobot_nexus.models.pi0.modeling_pi0:Pi0Model`，使用独立的
 `models/pi0/training/vendor/rlinf_core/` 算子。当前集成覆盖 BC、FSDP2、断点续训、
 Artifact 导出、离线推理和通用 HTTP 服务。RECAP、Memory 和
-`examples/pi05_real_robot/` 的专用部署入口属于 Pi0.5。
+`examples/real_robot/dobot_dual_arm_14d/` 的专用部署入口属于 Pi0.5。
 
 ## 模型和权重
 

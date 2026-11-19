@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "name": "atom18",
+  "state_names": [
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_pitch_joint",
+    "left_elbow_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "left_gripper_opening",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_pitch_joint",
+    "right_elbow_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+    "right_gripper_opening",
+    "head_yaw_joint",
+    "head_pitch_joint"
+  ],
+  "action_names": [
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_pitch_joint",
+    "left_elbow_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "left_gripper_opening",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_pitch_joint",
+    "right_elbow_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+    "right_gripper_opening",
+    "head_yaw_joint",
+    "head_pitch_joint"
+  ],
+  "camera_map": {
+    "top_camera": "top_camera",
+    "left_camera": "left_camera",
+    "right_camera": "right_camera"
+  }
+}

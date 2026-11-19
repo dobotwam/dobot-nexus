@@ -16,6 +16,7 @@ tests/
 ├── test_inference_transport.py     # WebSocket、NumPy 编码、客户端、串行 worker
 ├── test_repository_structure.py    # 模型公共接口、依赖隔离和可移植路径
 ├── entrypoints/                    # 环境脚本、训练/推理 launcher、真机样例 CLI
+│   └── atom/                       # ATOM 字段映射、相机生命周期、假设备执行与验证契约
 ├── algorithms/recap/              # Return、Advantage、标签、Value 作业与恢复
 ├── models/
 │   ├── pi0/                       # Pi0 模型与数据语义
@@ -66,6 +67,8 @@ CPU 检查不能证明 GPU 数值一致、推理性能或真机成功率。
   EMA/恢复属于公共 checkpoint 测试。
 - 模型测试覆盖 Artifact 加载、数值配置和 backend 校验；结构测试检查跨模型私有导入及依赖隔离。
 
-实模 smoke、多进程训练、FSDP 精度对照、GPU benchmark、真机验证及其脚本/报告统一放在
+开发用的实模 smoke、多进程训练、FSDP 精度对照、GPU benchmark、真机实验脚本/报告放在
 Git 忽略的 `local_script/`。
+可供用户运行的 ATOM 只读部署验证流程位于 `examples/real_robot/atom_w_0759/`，运行报告写入
+Git 忽略的 `runs/atom_robot/`；它不在本仓库 CPU 测试中连接硬件。
 正式源码和测试不得反向导入这些工具；共享协议的每次变更仍须增加相应 CPU 契约测试。

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from examples.pi05_real_robot._runtime import wire
+from examples.real_robot.dobot_dual_arm_14d._runtime import wire
 
 
 class RobotWireTest(unittest.TestCase):
