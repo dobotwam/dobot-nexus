@@ -18,7 +18,7 @@ robot-server  ←──── TCP 12006 ────→  robot-client  ←──
 相机、状态、硬件执行                    转发观测和动作                      模型推理
 ```
 
-需要三个终端，建议按 **policy-server → robot-server → robot-client** 顺序启动。
+需要三个终端，按 **policy-server → robot-server → 输入 `model` 交接 → robot-client** 顺序启动。
 
 | 进程 | 机器 | Python 环境 |
 |---|---|---|
@@ -120,7 +120,20 @@ bash examples/real_robot/dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 ```
 
 此模式仍会初始化硬件环境、读取相机和机器人状态，模型动作路径通过日志显示预测值。
-`robot.step()` 由 `ROBOT_EXECUTE` 控制。保留终端，等待客户端连接。
+`robot.step()` 由 `ROBOT_EXECUTE` 控制。
+
+机器人默认处于 `positioning_paused`，此时尚不接受模型客户端连接。保持服务在前台交互终端
+运行，准备好初始姿态后，在**运行机器人服务的终端 B** 输入下面这一行并按 Enter
+（这是服务的交互命令，不是在另一个 shell 执行）：
+
+```text
+model
+```
+
+等日志 `[control-state]` 中的 `state` 变为 `model_waiting`，再启动第 5.4 节的客户端；
+连接并完成认证后状态变为 `model_control`。dry-run 也需要这一步。
+如果启用了手动跟随，先分别输入 `adjust-left-on`、`adjust-right-on` 并按 Enter，
+将两臂恢复到暂停跟随的调整状态，再输入 `model`。
 
 ## 5.4 终端 C，在 GPU 主机启动通信客户端
 
@@ -148,7 +161,8 @@ bash examples/real_robot/dobot_dual_arm_14d/start_robot_client.sh
 
 1. 在客户端和机器人服务终端分别按 `Ctrl+C` 停止进程。
 2. 机器人终端保留上面设置的环境变量，运行下面的命令。
-3. GPU 主机重新执行第 5.4 节的客户端命令。
+3. 按第 5.3 节在机器人终端输入 `model`，确认状态为 `model_waiting`。
+4. GPU 主机重新执行第 5.4 节的客户端命令。
 
 ```bash
 ROBOT_EXECUTE=1 HOME_ON_START=0 CONFIRM_EACH_ACTION=1 \
@@ -160,12 +174,16 @@ bash examples/real_robot/dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 按照机器人终端提示确认执行，先逐步观察关节方向和夹爪响应。
 发现异常时使用硬件急停并停止当前测试。
 
+客户端断开或任务结束后，机器人恢复 `positioning_paused`。再次连接前需重新输入 `model`；
+服务不会自动重新交出控制权。如果已过早启动客户端，完成交接后重新运行客户端命令。
+
 ## 5.6 常见问题
 
 | 现象 | 检查位置 |
 |---|---|
 | healthz 连接失败 | policy 终端是否加载完成，端口是否一致 |
 | 连接机器人超时 | `ROBOT_HOST`、`ROBOT_PORT`、两机网络与防火墙 |
+| 客户端连接后立即断开，提示 handoff not ready | 先在机器人服务终端输入 `model`，确认 `model_waiting` 后重启客户端 |
 | 找不到 `dobot_environment` | `ROBOT_PYTHON`、`ENV_SRC` 和硬件项目安装 |
 | 维度不匹配 | Artifact 是否为当前 14 维双臂任务 |
 | 图像错误 | 相机序列号、公共映射、颜色顺序和 ROI |

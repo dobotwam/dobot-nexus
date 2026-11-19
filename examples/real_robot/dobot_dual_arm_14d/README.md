@@ -3,6 +3,10 @@
 硬件入口按本体与维度命名：`start_dobot_dual_arm_14d_server.sh` 适配 Dobot 双臂，
 每臂六关节加一个夹爪。策略服务与通信客户端按 Artifact 处理维度；其他本体需实现
 对应的状态读取和动作执行，字段与单位见 [ATOM W + DH 24 维协议](../../../docs/robots/atom_dh_24d.md)。
+XTrainer 双臂 14 维的 Pi0.5 BC 推理配方见
+[pi05_xtrainer14.yaml](../../recipes/infer/pi05_xtrainer14.yaml)，硬件端使用本目录的机器人服务。
+ATOM W 0759 的 18 维独立硬件入口见 [ATOM 示例](../atom_w_0759/README.md)。
+该入口直接访问策略服务，使用共享的字段布局契约，不经过双臂 TCP 桥。
 
 第一次联调请按[三进程真机部署](../../../docs/getting_started/05_deployment.md)操作。
 新手指南以 BC 为例，分别说明两台机器的环境、启动顺序、dry-run 与人工确认执行。
@@ -90,6 +94,13 @@ bash dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 | 遥操作串口 | `LEFT_TELOP_PORT`、`RIGHT_TELOP_PORT` |
 
 默认 `ROBOT_EXECUTE=0`，采集观测并接收预测，不调用 `robot.step()`。
+服务启动后默认处于 `positioning_paused`。保持机器人服务在前台交互终端运行，完成姿态准备后，
+在**运行该服务的终端**输入 `model` 并按 Enter；这是服务交互命令，不是 shell 命令。
+确认 `[control-state]` 日志中的 `state` 为 `model_waiting`，再启动第 3 节的 client。
+客户端认证成功后变为 `model_control`。dry-run 与执行模式都需要交接。
+如果开启了手动跟随，先输入 `adjust-left-on`、`adjust-right-on`，各按 Enter，
+关闭两臂跟随后再输入 `model`。
+
 使用同一组环境变量开启执行：
 
 ```bash
@@ -106,7 +117,8 @@ ROBOT_EXECUTE=1 bash dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 
 ## 3. GPU 主机：启动 client
 
-在另一个终端连接机器人与本机 policy：
+在另一个终端配置与机器人端相同的 `NEXUS_ROBOT_TOKEN`，确认机器人已进入
+`model_waiting`，再连接机器人与本机 policy：
 
 ```bash
 CLIENT_PYTHON=/path/to/pi05/bin/python \
@@ -123,6 +135,10 @@ bash examples/real_robot/dobot_dual_arm_14d/start_robot_client.sh
 - client 默认采用机器人发送的任务；`TASK_OVERRIDE` 可显式覆盖。
 - 机器人 TCP 默认端口为 `12006`，用 `ROBOT_PORT` 修改；policy 端口用 `POLICY_PORT` 修改。
 - 其他参数可直接追加到启动命令；`BRIDGE_SCRIPT` 可指定自定义通信脚本。
+
+客户端断开、任务结束或重启 robot-server 后，机器人恢复 `positioning_paused`。
+重新连接前需在机器人服务终端再次输入 `model`，确认 `model_waiting` 后重启 client。
+提前连接被拒绝时也按此顺序重试；Memory 重连会开始新的历史会话。
 
 ## Memory 与通信约定
 

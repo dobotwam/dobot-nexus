@@ -166,9 +166,16 @@ Memory 的连续推理使用下节的历史桥接链路；普通单帧 `examples
 机器人使用已有硬件环境，串口、机械臂 IP 和相机序列号按[真机部署说明](../examples/real_robot/dobot_dual_arm_14d/README.md)配置。
 以下以 **30 Hz、顶部全图**的按钮任务为例；任务文本、频率和裁剪应与训练数据一致。
 
+机器人环境需要安装 `msgpack`。在机器人服务终端和 GPU client 终端，分别通过密钥管理工具
+或安全交互输入导出**相同的** `NEXUS_ROBOT_TOKEN`（至少 32 字节随机密钥）。新开终端时
+重新注入该密钥，不要在两端各自生成不同的值，也不要写入配置或 Git。
+生成与分发要求见 [Robot TCP 认证](../examples/real_robot/dobot_dual_arm_14d/README.md#robot-tcp-认证)。
+
 ```bash
+: "${NEXUS_ROBOT_TOKEN:?请先注入与 GPU client 相同的机器人认证密钥}"
 export ROBOT_PYTHON=/path/to/robot-env/bin/python
 export ENV_SRC=/path/to/robot/environment/source
+export ROBOT_BIND_HOST=ROBOT_IP
 export TASK='press the yellow button, then press the red button, and then press the yellow button.'
 export TOP_ROI_XYWH=none
 export BRIDGE_MODE=memory
@@ -180,12 +187,21 @@ ROBOT_EXECUTE=0 bash dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 
 此时采集图像和状态、接收预测，不执行模型动作。若训练使用顶部裁剪，设置
 `TOP_ROI_XYWH='X Y W H'`；当前真机 Memory 桥接只传顶部相机历史。
+`ROBOT_IP` 必须替换为机器人主机上供 GPU 主机访问的网卡地址；默认回环地址仅用于同机连接。
+
+保持机器人服务在前台交互终端运行。初始状态为 `positioning_paused`，准备好姿态后，
+在**运行该服务的终端**输入 `model` 并按 Enter；这是服务交互命令，不是 shell 命令。
+如果打开过手动跟随，先输入 `adjust-left-on`、`adjust-right-on` 并分别按 Enter 关闭两臂跟随。
+确认 `[control-state]` 日志中的 `state` 为 `model_waiting`，再启动下面的 client。
+认证连接成功后状态为 `model_control`；dry-run 同样需要交接。
 
 ### GPU 主机：另开终端启动 client
 
-先按第 1 节设置 `NEXUS_PYTHON`，回到 Nexus 仓库根目录执行：
+先按第 1 节设置 `NEXUS_PYTHON`，在本终端注入与机器人端相同的 `NEXUS_ROBOT_TOKEN`，
+回到 Nexus 仓库根目录执行：
 
 ```bash
+: "${NEXUS_ROBOT_TOKEN:?请先注入与机器人端相同的认证密钥}"
 CLIENT_PYTHON="$NEXUS_PYTHON" \
 BRIDGE_MODE=memory HISTORY_FPS=30 ACTIONS_PER_RESPONSE=8 \
 ROBOT_HOST=ROBOT_IP ROBOT_PORT=12006 POLICY_HOST=127.0.0.1 POLICY_PORT=8001 \
@@ -204,9 +220,12 @@ bash examples/real_robot/dobot_dual_arm_14d/start_robot_client.sh
 ROBOT_EXECUTE=1 bash dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 ```
 
-再执行上面的 client 命令连接。默认启动时确认并回 Home，动作执行需要人工确认。
+默认启动时确认并回 Home。Home 完成后，在机器人服务终端重新输入 `model`，
+确认 `model_waiting` 后再执行上面的 client 命令连接；动作执行仍需要人工确认。
 按 `h` 回 Home 默认结束当前历史，新一轮从帧 0 开始。切换任务指令也应重新开始 episode；
 连接断开后历史被清理，重连不会恢复上一轮记忆。
+客户端断开或任务结束后，机器人恢复 `positioning_paused`；每次重连都需先重新输入 `model`
+再启动 client。如果 client 连接过早被拒绝，完成交接后重新执行 client 命令。
 
 ## 常见问题
 
@@ -216,6 +235,9 @@ ROBOT_EXECUTE=1 bash dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 | 特征缓存身份或 SHA256 不匹配 | 核对训练划分、编码器和相机配置；用新目录、新版本标识重新生成 |
 | `q01/q99` 缺失 | 通用配置移除外部 stats 覆盖以自动计算；按钮 recipe 使用对应训练集的 quantile stats |
 | policy 正常但历史未上传 | 检查 robot-server、client 两端的 `BRIDGE_MODE=memory`、端口与历史采样频率 |
+| 缺少 token 或认证失败 | 在机器人服务与 client 两个终端注入相同的 `NEXUS_ROBOT_TOKEN` |
+| 远端连接机器人超时 | 检查 `ROBOT_BIND_HOST` 是机器人可达网卡地址，并核对 `ROBOT_HOST`、端口和网络 |
+| 连接后立即断开，提示 handoff not ready | 在机器人服务终端输入 `model`，确认 `model_waiting` 后重启 client |
 | 更换权重后行为异常 | 核对完整 Artifact，以及任务指令、裁剪、动作频率；重新连接以清空历史 |
 
 ## 部署资源限制
