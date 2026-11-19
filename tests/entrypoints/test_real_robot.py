@@ -57,6 +57,25 @@ class RealRobotEntrypointsTest(unittest.TestCase):
                     index = child["args"].index("--artifact")
                     self.assertEqual(child["args"][index + 1], str(artifact))
 
+    def test_documented_model_handoff_is_required_again_after_disconnect(self):
+        from examples.real_robot.dobot_dual_arm_14d._runtime import dobot_dual_arm_14d as bridge
+
+        env = mock.Mock()
+        control = bridge.PositioningControl(
+            env, mock.Mock(), emit=mock.Mock(),
+            light_states={"off": "off", "yellow": "yellow", "green": "green"},
+        )
+        for _ in range(2):
+            self.assertEqual(control.state, "positioning_paused")
+            with self.assertRaisesRegex(RuntimeError, "before positioning handoff"):
+                control.model_connected()
+            self.assertTrue(control.handle_command("model"))
+            self.assertEqual(control.state, "model_waiting")
+            control.model_connected()
+            self.assertEqual(control.state, "model_control")
+            control.model_disconnected()
+        env.step.assert_not_called()
+
     def test_robot_launchers_work_from_a_standalone_directory(self):
         # The robot receives only this directory, without the Nexus source tree.
         # --help exercises both imports and CLI assembly without opening hardware.

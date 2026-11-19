@@ -39,6 +39,11 @@ STATE_NAMES = [
 ]
 IMAGE_NAMES = ["top_camera", "left_camera", "right_camera"]
 CONTROL_STATE_PREFIX = "[control-state] "
+MODEL_HANDOFF_HINT = (
+    "[control] Before starting or reconnecting the client, disable manual follow, "
+    "type 'model' and press Enter in this robot-server terminal. "
+    "Wait for state=model_waiting; a connected model enters state=model_control."
+)
 FOLLOW_SIGNS = np.array([1, 1, -1, -1, -1, 1], dtype=np.float32)
 
 
@@ -1392,6 +1397,7 @@ def _run_robot_server_locked(args: argparse.Namespace, *, runtime_factory=None) 
                 f"execute={args.execute}, max_joint_delta={args.max_joint_delta}, "
                 f"top_roi_xywh={args.top_roi_xywh}"
             )
+            log(MODEL_HANDOFF_HINT)
             while True:
                 if not runtime.operator_control.active:
                     raise RuntimeError("Web control channel closed")
@@ -1407,6 +1413,7 @@ def _run_robot_server_locked(args: argparse.Namespace, *, runtime_factory=None) 
                         f"Rejected client {addr}: model handoff not ready "
                         f"(state={runtime.positioning.state})"
                     )
+                    log(MODEL_HANDOFF_HINT)
                     conn.close()
                     continue
                 log(f"Client connected from {addr}")
@@ -1451,6 +1458,7 @@ def _run_robot_server_locked(args: argparse.Namespace, *, runtime_factory=None) 
                     runtime.clear_held_actions()
                     runtime.positioning.model_disconnected()
                     runtime.clear_model_cancel()
+                    log(MODEL_HANDOFF_HINT)
     except KeyboardInterrupt:
         log("Interrupted")
     finally:
