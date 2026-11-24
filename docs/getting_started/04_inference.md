@@ -83,6 +83,12 @@ PY
 
 adapter 会执行训练时对应的归一化和动作逆变换，输入应保留真实状态数值。
 
+Pi0/Pi0.5 模板默认使用 BF16 参数和 BF16 计算。训练保存的 FP32 参数会在加载时按推理配置转换；
+`model.inference_parameter_precision` 不会从 Artifact 中的训练配置自动继承。
+如需保留 FP32 参数，在下面推理命令的 `--` 后追加
+`model.inference_parameter_precision=fp32`。计算仍为 BF16；全 FP32 推理还需追加
+`model.precision=fp32`。完整字段、默认值及适用范围见[精度参数表](../precision.md)。
+
 ## 4.3 在一张 GPU 上运行
 
 首次检查使用 eager 推理，便于观察模型加载和数据处理。
@@ -134,6 +140,8 @@ bash examples/infer.sh \
 ```
 
 Pi0.5 BC 推理模板默认开启 `runtime.compile=true`、`compile_mode=legacy` 和 CUDA Graph。
+第 3.8 节的 18 维叠衣服 Artifact 使用 OpenPI 算子，需在命令的 `--` 后追加
+`runtime.compile_mode=openpi`；同样适用于其他 `operator_numerics=openpi` 的 BC Artifact。
 第一次运行包含编译与捕获耗时。Memory 使用专门的推理模板和历史输入，见[Memory 指南](../pi05_memory.md)。
 
 ## 4.5 常见问题

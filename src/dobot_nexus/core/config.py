@@ -113,7 +113,22 @@ def apply_overrides(config: dict[str, Any], overrides: list[str] | None) -> dict
     return config
 
 
+def resolve_autocast(config: Mapping[str, Any]) -> str:
+    """Resolve the outer autocast policy without importing a model or Torch."""
+    runtime = config.get("runtime", {})
+    if not isinstance(runtime, Mapping):
+        raise ValueError("runtime must be a mapping.")
+    value = runtime.get("autocast", "auto")
+    # PyYAML reads an unquoted `off` as False; CLI overrides retain the string.
+    if value is False:
+        return "off"
+    if isinstance(value, str) and value.lower() in {"auto", "off"}:
+        return value.lower()
+    raise ValueError("runtime.autocast must be 'auto' or 'off'.")
+
+
 def validate_config(config: Mapping[str, Any], expected_task: str | None = None) -> None:
+    resolve_autocast(config)
     schema_version = config.get("schema_version")
     if schema_version != 1:
         raise ValueError(f"schema_version must be 1, got {schema_version!r}.")
@@ -223,6 +238,7 @@ def resolve_training_runtime(config: Mapping[str, Any], *, world_size: int | Non
     WORLD_SIZE from torchrun. Persist the returned settings before saving a run
     so checkpoint compatibility checks use the actual execution strategy.
     """
+    resolve_autocast(config)
     if world_size is None:
         try:
             world_size = int(os.environ.get("WORLD_SIZE", "1"))

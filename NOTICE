@@ -6,6 +6,9 @@ Dobot Nexus is distributed under the Apache License, Version 2.0.
 The Dobot Nexus RECAP implementation is Copyright 2026 Dobot.
 Its module-level notice is in src/dobot_nexus/algorithms/recap/NOTICE.md.
 
+The ATOM hardware deployment examples are Copyright 2026 Dobot.
+Their source and external SDK attribution are in examples/real_robot/atom_common/NOTICE.md.
+
 Pi0 and Pi0.5 include model-owned adaptations of Apache-2.0 operator sources.
 Their LICENSE and NOTICE.md files identify the original sources and adaptations:
 - src/dobot_nexus/models/pi0/training/vendor/rlinf_core/

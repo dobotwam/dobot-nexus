@@ -1,166 +1,279 @@
+<div align="center">
+
 # Dobot Nexus
 
-Dobot Nexus 用于训练和部署机器人视觉语言动作模型（VLA）。模型接收相机图像、机器人状态和任务指令，输出一段机器人动作。你可以用自己的演示数据微调模型，再加载训练产物做推理和真机测试。
+**An Open, Modular Embodied AI Platform — VLA Available Today · World Models (WM) in Design · World-Action Models (WAM) on the Roadmap**
 
-第一次使用，请按下面的 **Pi0.5 BC 新手路线**操作。BC（Behavior Cloning，行为克隆）表示用演示中的观测和动作训练策略。文档提供 14 维 Dobot 双臂示例，以及 18 维双臂叠衣服任务的独立配置，两者都为策略选择三路相机输入。
+<p>
+  <a href="pyproject.toml"><img alt="Version" src="https://img.shields.io/badge/version-1.0.0-0A66C2"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-green"></a>
+  <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-%3E%3D3.10%20(CI%203.11)-blue"></a>
+  <a href="pyproject.toml"><img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-2.10-EE4C2C"></a>
+  <a href=".github/workflows/ci.yml"><img alt="CI Workflow" src="https://img.shields.io/badge/CI-CPU%20Contracts%20%26%20Wheel-4c1"></a>
+</p>
+
+<p>
+  <strong>English</strong> · <a href="README_zh.md">简体中文</a> ·
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#world-models-wm--world-action-models-wam">WM / WAM</a> ·
+  <a href="#documentation-hub">Docs</a> ·
+  <a href="SECURITY.md">Security</a>
+</p>
+
+</div>
+
+---
+
+**Dobot Nexus** is a contract-driven, PyTorch-native embodied AI codebase supporting **Vision-Language-Action (VLA)** training, inference, and real-robot deployment today, while establishing the shared foundation to grow into **World Models (WM)** and **World-Action Models (WAM)**.
+
+Instead of coupling training loops, inference servers, and robot hardware to a single monolithic model repository, Dobot Nexus separates stable repository contracts (`core/`, `training/`, `inference/`) and shared data utilities (`data/`) from model-owned operators (`models/`), algorithm workflows (`algorithms/`), and reusable neural components (`modules/`). Policy runs managed by `BCTrainer` export **Schema v2 Artifacts** so offline evaluation, HTTP/WebSocket serving, and closed-loop real-robot execution restore the same model target, dimensions, data mappings, and declared training assets.
+
+<p align="center">
+  <img src="docs/assets/architecture.png" alt="Dobot Nexus Platform Architecture" width="96%">
+</p>
+
+## Why Dobot Nexus?
+
+- **Zero-Registry, Contract-First Extensibility**: Point `model.target` in YAML to any internal or external class/factory whose `from_config` returns a `BaseVLAModule` (owning a `BaseDataAdapter` defined in `src/dobot_nexus/models/base.py`). Model-owned operators stay strictly isolated with no cross-model imports.
+- **Unified Policy Train → Artifact → Serve Loop**: `BCTrainer` exports Schema v2 Artifacts that separate portable deployment weights/assets (`deployment/`) from optional distributed resume states (`resume/`). Inference restores the model target, dimensions, data mappings, and declared training assets directly from the Artifact (external `model.target` implementations still require their Python package at deployment).
+- **Multi-Paradigm VLA Stack**: Implemented in `v1.0` with CPU contract tests for **Behavior Cloning (BC)**, **Long-Horizon Memory (`Pi0.5-Memory` / `Pi0-Memory`)**, and **Offline RL / Advantage-Conditioned Policies (`RECAP / ACP` for both Pi0.5 and Pi0)** with shared reusable Value networks (`modules/value/`).
+- **Numerical & Security Hardening**: Explicit BF16/FP32 precision contracts ([`docs/precision.md`](docs/precision.md)), cross-rank NaN/Inf update guards, `weights_only=True` deserialization, opt-in trusted DCP resume, loopback-by-default HTTP/WebSocket serving with token auth required on non-loopback binds, HTTP session isolation, Memory WS per-connection history, and HMAC-SHA256 Robot TCP v2 transport ([`SECURITY.md`](SECURITY.md)).
+- **Real-Robot Integration**: Includes **Dobot Dual-Arm 14D** (3-process WS + TCP v2 bridge), **ATOM D 18D** (documented PC2 single-host closed-loop folding setup with Home-start, `replay_seed` seed-preserving recomputation, up to 4 bridge rows within 2° of the final command of the preceding chunk plus separate 4° handoff seam checks, and interactive terminal control), and **ATOM W 0759 18D** hardware runtime.
+- **Architectural Path to WM & WAM**: Active design package ([`docs/wm/`](docs/wm/README.md)) proposing how to extend Nexus's shared config loader, `Experiment`, `Runtime`, and tracking to **Wan2.2** video world models and later action-conditioned embodied dynamics toward WAM.
+
+---
+
+## Model, Paradigm & Embodiment Matrix
+
+| Family | Paradigm / Recipe | Model / Target | Training | Inference & Serving | Real Robot | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| **VLA** | Behavior Cloning (BC) | **Pi0.5** (`Pi05Model`) | Local / Accelerate / FSDP2, EMA, DCP | Offline, HTTP, WS, Torch inference (optional CUDA Graph) | Dual-Arm 14D, ATOM D 18D, ATOM W 0759 18D | **Implemented (`v1.0`, CPU contracts tested)** |
+| **VLA** | Long-Horizon Memory | **Pi0.5-Memory** (`Pi05MemoryModel`) | Frozen vision feature store + BC loop | Per-connection session history WS (`MemorySession`) | Dual-Arm 14D | **Implemented (`v1.0`, CPU contracts tested)** |
+| **VLA** | Offline RL / ACP | **Pi0.5-RECAP** (`Pi05ReCapModel`) | Offline Value (`Fusion`, separate `.pt` ckpt) + advantage labeling + ACP | Conditional policy HTTP / WS | Dual-Arm 14D | **Implemented (`v1.0`, CPU contracts tested)** |
+| **VLA** | Behavior Cloning (BC) | **Pi0** (`Pi0Model`, state/action each 1–32D) | Local / Accelerate / FSDP2, EMA, DCP | Offline, HTTP | — | **Implemented (`v1.0`, CPU contracts tested)** |
+| **VLA** | Long-Horizon Memory | **Pi0-Memory** (`Pi0MemoryModel`, 1–32D) | Frozen SigLIP feature store (`pi0.memory.prepare`) + BC loop | Per-session history (`MemorySession` / `pi0.memory.infer`) | — | **Implemented (`v1.0`, CPU contracts tested)** |
+| **VLA** | Offline RL / ACP | **Pi0-RECAP** (`Pi0ReCapModel`, 1–32D) | Offline Value (`Fusion`, separate `.pt` ckpt) + advantage labeling + ACP | Conditional policy Offline / HTTP | — | **Implemented (`v1.0`, CPU contracts tested)** |
+| **WM** | Video Generation (T2V / I2V) | **Wan2.2** (proposed `TI2V-5B` first, then `I2V-A14B`) | Proposed flow matching, LoRA / dual-expert | Proposed offline generator, then async job server | — | **In Design** ([`docs/wm/`](docs/wm/README.md)) |
+| **WAM** | Action-Conditioned Dynamics & World-Action Unification | Embodied WM + Policy Direction | Proposed action-conditioned rollout (planner external) | Research direction beyond WM v1 | — | **Roadmap** |
+
+> **Scope & verification note**: All **VLA** rows above are implemented in `v1.0` and covered by fast CPU unit/contract tests in CI (live GPU training, FSDP2 scaling, CUDA Graph speedups, and robot task success require your own GPU/hardware verification; see [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md) for the documented ATOM D field setup). **WM (Wan2.2)** currently consists of design and pseudocode specifications under [`docs/wm/`](docs/wm/README.md) with no runnable WM CLI/code yet; **WAM** is a longer-term platform direction.
+
+### Supported Data & Robot Contracts
+
+| Layer | Supported Formats / Embodiments | Reference |
+| --- | --- | --- |
+| **Datasets** | Shared policy reader supports LeRobot v2.1 (Parquet embedded JPEG/PNG or Parquet + MP4, not mixed per dataset) and delegates v3 video reading to upstream LeRobot; offline RECAP requires LeRobot **v2.1** metadata; Dobot dual-arm 14D recorder PKL → LeRobot v2.1 converter (`BC`, `RECAP` success/intervention tags, `extra_fields`) | [`docs/getting_started/02_data.md`](docs/getting_started/02_data.md), [`data_processing/README.md`](data_processing/README.md) |
+| **Dobot Dual-Arm 14D** | Metadata-driven Pi0.5 WS policy server (`Pi05Model` / `Pi05ReCapModel` / `Pi05MemoryModel`) + TCP v2 (`msgpack` + HMAC-SHA256) robot bridge | [`examples/real_robot/dobot_dual_arm_14d/README.md`](examples/real_robot/dobot_dual_arm_14d/README.md) |
+| **ATOM D (18D)** | Single-host PC2 closed-loop bimanual T-shirt folding, Home-start, async prefetch with `replay_seed` seed-preserving recomputation (up to 4 bridge rows within 2° of the final command of the preceding chunk; separate 4° seam & consistency checks; auto-falls back to sync on older servers), interactive operator (`Enter` / `h` / `Ctrl+C`) | [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md) |
+| **ATOM W 0759 (18D)** | `atom18` layout contract (`examples/real_robot/shared/layouts/atom18.json`), digest-pinned SDK/URDF/gains with live PC1 position limits & calibration verified before control, `hold`/`policy` head mode | [`examples/real_robot/atom_w_0759/README.md`](examples/real_robot/atom_w_0759/README.md) |
+| **ATOM DH (24D)** | Hardware field contract specification (distinct from 18D; no silent padding/truncation) | [`docs/robots/atom_dh_24d.md`](docs/robots/atom_dh_24d.md) |
+
+---
+
+<a id="从哪里开始"></a>
+## Quickstart
+
+### 1. Clone & Create a Model Environment
+
+Package constraints: Python `>=3.10` (Python `3.11` used in CI) and PyTorch `2.10` (`torch>=2.10,<2.11`). For the GPU training/inference recipe below, use Linux with BF16-capable NVIDIA GPUs (CPU local execution and FP32 inference are also supported; see [`docs/environments.md`](docs/environments.md) and [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md) for field-specific environments).
 
 ```bash
 git clone https://github.com/fengzx99/dobot-nexus.git
 cd dobot-nexus
+
+# Create an isolated Pi0.5 environment (with HTTP serve + WebSocket extras)
+python3.11 scripts/env/create_model_env.py --model pi05 --extra serve --extra websocket
+source .venvs/pi05/bin/activate
+python scripts/env/check_model_env.py --model pi05 --extra serve --extra websocket
 ```
 
-代码采用 [Apache-2.0](LICENSE) 许可证。RECAP 实现的 Dobot 版权和来源说明见
-[RECAP NOTICE](src/dobot_nexus/algorithms/recap/NOTICE.md)；第三方来源见 [NOTICE](NOTICE)。
+Or install directly into an existing compatible environment using recommended extras (`pi05`, `pi0`, `accelerate`, `serve`, `websocket`, `tensorboard`, `tracking`, `legacy-data`, `dev`; `openpi` is also retained as a compatibility alias for `websocket`):
 
-## 从哪里开始
+```bash
+pip install -e ".[pi05,accelerate,serve,websocket]"
+```
+
+### 2. Train a Pi0.5 BC Policy & Monitor with TensorBoard
+
+The default `examples/configs/train/pi05.yaml` expects a 14D LeRobot dataset mapped to the three required camera slots (`base`, `left_wrist`, `right_wrist`); use `model.state_dim`, `model.action_dim`, and `data.field_mapping` to remap other datasets (if either public vector exceeds the default internal width of 32, also increase `model.model_action_dim`, e.g., `64` in the shipped 34D recipe). `examples/train.sh` launches a single process for 1 GPU or `torch.distributed.run` for multiple GPUs, and the template's `runtime.launcher: auto` resolves to `local` (1 process) or `accelerate` with FSDP2 (multi-process).
+
+```bash
+# Multi-GPU (or single-GPU via --gpus 0) Pi0.5 BC training
+bash examples/train.sh \
+  --config examples/configs/train/pi05.yaml \
+  --gpus 0,1 \
+  --run-name pi05_demo \
+  -- data.path=/path/to/lerobot_dataset model.checkpoint=/path/to/pi05_base_torch
+
+# Or invoke the installed CLI directly (single process, matching run name)
+dobot-nexus train --config examples/configs/train/pi05.yaml \
+  exp.name=pi05_demo \
+  data.path=/path/to/lerobot_dataset model.checkpoint=/path/to/pi05_base_torch
+```
+
+Training templates enable TensorBoard by default. Launch the dashboard on `127.0.0.1:6006`:
+
+```bash
+dobot-nexus tensorboard --logdir runs --port 6006
+```
+
+### 3. Run Offline Inference or Start the Loopback HTTP Policy Server
+
+For ordinary Pi0.5 BC / RECAP and Pi0 BC / RECAP policy Artifacts, pass a run directory, `latest_deployment.txt` pointer, or `step_XXXXXXXX` directory (`Pi0.5-Memory` uses its dedicated session-history WebSocket server, and `Pi0-Memory` uses `python -m dobot_nexus.models.pi0.memory.infer --config examples/configs/infer/pi0_memory.yaml --input ... --output ...` or `MemorySession`):
+
+```bash
+# Offline action-chunk prediction (.json or .npz observation -> actions.npz)
+bash examples/infer.sh \
+  --model pi05 \
+  --artifact runs/pi05_demo/checkpoints/latest_deployment.txt \
+  --input /path/to/observation.npz \
+  --output actions.npz
+
+# Start the loopback HTTP policy server (127.0.0.1:12021; set NEXUS_POLICY_TOKEN for non-loopback binds)
+bash examples/infer.sh \
+  --model pi05 \
+  --artifact runs/pi05_demo/checkpoints/latest_deployment.txt \
+  --serve
+```
+
+Equivalent direct CLI commands (add `CUDA_VISIBLE_DEVICES=0` / `runtime.device=cuda` for wrapper parity):
+
+```bash
+dobot-nexus infer --config examples/configs/infer/pi05.yaml \
+  --input /path/to/observation.npz --output actions.npz \
+  model.artifact=runs/pi05_demo/checkpoints/latest_deployment.txt runtime.device=cuda
+
+dobot-nexus serve --config examples/configs/infer/pi05.yaml \
+  model.artifact=runs/pi05_demo/checkpoints/latest_deployment.txt runtime.device=cuda
+```
+
+### 4. Deploy to a Real Robot
+
+- **Step-by-step Pi0.5 onboarding (5 guides, including the 18D T-shirt folding training guide in [§3.8](docs/getting_started/03_training.md#38-训练-18-维叠衣服任务))**: [`01_environment.md`](docs/getting_started/01_environment.md) → [`02_data.md`](docs/getting_started/02_data.md) → [`03_training.md`](docs/getting_started/03_training.md) → [`04_inference.md`](docs/getting_started/04_inference.md) → [`05_deployment.md`](docs/getting_started/05_deployment.md).
+- **ATOM D 18D closed-loop folding**: [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md) (`./examples/real_robot/atom_d/run_atom_d.sh`, deployment recipe: [`examples/recipes/infer/pi05_atom18.yaml`](examples/recipes/infer/pi05_atom18.yaml)).
+- **Dobot Dual-Arm 14D (BC / Memory / RECAP)**: [`examples/real_robot/dobot_dual_arm_14d/README.md`](examples/real_robot/dobot_dual_arm_14d/README.md).
+
+---
+
+## Architecture
+
+### Repository Layout
 
 ```text
-准备环境和初始权重
-        ↓
-选择数据入口（已有 LeRobot / 支持的原始采集格式）
-        ↓
-检查数据字段、向量维度、相机映射和动作语义
-        ↓
-10 步训练检查 → 正式训练 → 保存 Artifact
-        ↓
-真实观测离线推理 → 启动策略服务 → 机器人联调 → 执行动作
+dobot-nexus/
+├── src/dobot_nexus/
+│   ├── cli/                   # Unified CLI: train / infer / serve / tensorboard
+│   ├── core/                  # Config resolution, contracts, Experiment, Schema v2 Artifacts
+│   ├── data/                  # Shared LeRobot readers, image conversion, observation IO, stats & cache
+│   ├── training/              # BCTrainer, Local/Accelerate/FSDP2 runtime, EMA, DCP resume, tracking
+│   ├── inference/             # InferencePolicy, PolicySession, HTTP/WS servers, security guards
+│   ├── algorithms/recap/      # Returns, advantages, offline Value training & dataset labeling
+│   ├── modules/value/         # Reusable Fusion value networks, distributions & losses
+│   └── models/                # BaseVLAModule/BaseDataAdapter contract + isolated models (pi05/, pi0/)
+├── data_processing/           # Dobot dual-arm 14D recorder PKL -> LeRobot v2.1 converter
+├── examples/                  # Train/infer YAML configs, task recipes, real-robot & ATOM runtimes
+├── scripts/                   # Model venv builders/checkers and wheel packaging smoke test
+├── docs/                      # Getting started, model/precision guides, robot contracts & WM design
+└── tests/                     # Fast CPU contract, security, packaging & entrypoint unit tests
 ```
 
-| 顺序 | 阅读与操作 | 完成后得到什么 |
-|---|---|---|
-| 1 | [环境构建与权重准备](docs/getting_started/01_environment.md) | Pi0.5 Python/CUDA 环境、初始权重路径 |
-| 2 | [LeRobot v2.1 格式与数据转换](docs/getting_started/02_data.md) | 可读取的数据集、任务文本和相机映射 |
-| 3 | [第一次训练、正式训练与续训](docs/getting_started/03_training.md) | 任务配置、训练日志、完整 Artifact |
-| 4 | [加载 Artifact 做离线推理](docs/getting_started/04_inference.md) | 真实观测输入、预测动作文件 |
-| 5 | [三进程真机部署](docs/getting_started/05_deployment.md) | 策略服务、机器人服务和通信客户端 |
+### Extending the Platform (`model.target`)
 
-已有 LeRobot 数据可以从第 2 篇的数据检查开始。已有完整 Artifact 可以从第 4 篇开始，同时按第 1 篇准备 GPU 推理环境。
+New VLA models implement `BaseVLAModule` (owning a `BaseDataAdapter`) from `src/dobot_nexus/models/base.py`—inside `src/dobot_nexus/models/<name>/` or in any external Python package—and plug into `BCTrainer`, `ArtifactManager`, and the generic `InferencePolicy` / HTTP server via YAML:
 
-## 数据格式支持
+```yaml
+model:
+  target: my_pkg.modeling_custom:CustomVLAModel
+  state_dim: 18
+  action_dim: 18
+  action_horizon: 50
+  precision: bf16
+```
 
-先确认手里的数据属于哪种格式，再选择读取或转换步骤。
-
-| 输入数据 | 当前支持范围 | 操作入口 |
-|---|---|---|
-| LeRobot v2.1，Parquet 内嵌 JPEG/PNG | 可直接读取，包含 18 维叠衣服数据 | [检查数据](docs/getting_started/02_data.md#24-用训练环境检查数据) |
-| LeRobot v2.1，Parquet + MP4 | 可按 episode 和 timestamp 读取视频帧 | [目录与字段](docs/getting_started/02_data.md#22-v21-的目录和字段) |
-| Dobot recorder，每个 PKL 保存整条轨迹 | 正式转换器接收左右各 7 维状态和动作、三路图像及 timestamp | [转换步骤](docs/getting_started/02_data.md#23-把-dobot-recorder-pkl-转换成-v21) |
-| 叠衣服原始采集，逐帧 PKL + 四路 JPG 目录 | 需要专用格式转换器，正式转换入口待补齐 | [原始采集要求](docs/getting_started/02_data.md#从叠衣服原始采集开始的要求) |
-
-训练配置中的 `model.state_dim`、`model.action_dim` 分别匹配数据向量长度，
-`data.field_mapping` 将已转换的 LeRobot 列映射到模型输入。Pi0.5 支持对 state/action 使用
-`zscore` 或 `quantile` 归一化，并将训练统计保存到 Artifact。原始文件解析由对应转换器负责。
-
-### 复现双臂叠衣服训练
-
-先准备完整的 `collect_data` LeRobot v2.1 数据集和 Pi0.5 初始权重。
-该任务使用 18 维状态和动作、20 Hz 数据、`absolute` 动作变换及 `quantile` 归一化。
-数据保留四路相机，策略输入选用 `top_left`、`wrist_left`、`wrist_right`。
-任务指令为 `Fold the T-shirt with both arms.`。[数据检查与相机映射](docs/getting_started/02_data.md#25-使用-18-维叠衣服数据)
-
-使用任务专属配置，先完成 10 步小 batch 训练检查，再启动 20000 步正式训练。
-文档包含配置生成、双卡启动和产物路径，完整 GPU 训练及任务成功率需要在自己的环境中验证。
-[叠衣服训练步骤](docs/getting_started/03_training.md#38-训练-18-维叠衣服任务)
-
-## 开始前准备什么
-
-- 一份本仓库源码，以及可创建 Python 3.11 虚拟环境的 Linux 主机。
-- 支持 BF16 的 NVIDIA GPU。新手训练命令使用两张 GPU 和 FSDP，离线推理使用一张 GPU。显存需求随训练配置变化，先运行小 batch 的训练检查。
-- 与本仓库兼容的 Pi0.5 Torch 初始权重。权重准备方式和可接受的文件名见第 1 篇。
-- 自己采集的演示轨迹，或已经整理好的 LeRobot v2.1 数据集。
-- 真机部署阶段需要机器人主机、硬件项目的 Python 环境、相机与机械臂配置。
-
-文档中的 `/path/to/...` 要替换成你自己的绝对路径。命令默认在仓库根目录执行。新终端需要重新进入仓库、激活环境，并重新设置该篇使用的环境变量。两台机器上的路径可以不同。
-
-## 几个常用词
-
-| 名称 | 含义 |
-|---|---|
-| episode / 轨迹 | 一次任务尝试，从开始到结束的一段连续采集 |
-| frame / 帧 | 某一时刻的图像、状态、动作和时间信息 |
-| action chunk / 动作块 | 模型一次预测的多步动作，默认长度为 50 |
-| checkpoint | 保存下来的模型或训练状态 |
-| Artifact / 训练产物 | 包含权重、配置、归一化统计和 tokenizer 的可加载目录 |
-| FSDP | 把模型、梯度和优化器状态分片到多张 GPU 的训练方式 |
-| run | 一次实验，默认保存在 `runs/<实验名>/` |
-
-## 当前支持的入口
-
-| 用途 | 配置或入口 |
-|---|---|
-| Pi0.5 BC | `examples/configs/train/pi05.yaml` |
-| Pi0.5 Memory | `examples/configs/train/pi05_memory.yaml` |
-| Pi0.5 RECAP 条件策略 | `examples/configs/train/pi05_recap.yaml` |
-| Pi0 | `examples/configs/train/pi0.yaml` |
-| 训练 | `examples/train.sh` |
-| 离线推理 / HTTP 服务 | `examples/infer.sh` |
-| Pi0.5 真机 WebSocket 链路 | `examples/pi05_real_robot/` |
-
-训练和推理通过 `model.target` 选择模型，并使用同一份 Artifact 配置与数据处理资产。Pi0.5 使用仓库内置 Torch core，Pi0 使用独立的模型算子。
-
-## 进阶参考
-
-先完成新手路线，再按需要查阅以下内容。
-
-| 文档 | 内容 |
-|---|---|
-| [环境参数参考](docs/environments.md) | 自定义 venv、依赖边界、服务与指标记录 extras |
-| [数据转换参考](data_processing/README.md) | 成败、人工干预、扩展字段和转换配置 |
-| [Pi0.5 训练与部署配置指南](docs/pi05_training.md) | 数据语义、归一化、FSDP、恢复、编译和故障排查 |
-| [Pi0 训练与推理](docs/pi0_training.md) | Pi0 权重、连续状态、维度配置、BC、续训与 Artifact 推理 |
-| [任务配置样例](examples/recipes/README.md) | USB、按钮、KBD 等已有任务配方 |
-| [Memory 指南](docs/pi05_memory.md) | 历史特征准备、训练和历史服务 |
-| [RECAP / ACP 指南](docs/recap/README.md) | 离线 Value、优势标注和条件策略 |
-| [真机启动器参数](examples/pi05_real_robot/README.md) | BC、RECAP、Memory 的参数和通信约定 |
-| [全部用户样例](examples/README.md) | 各模型的训练、推理和服务入口 |
-
-## 开发者入口
+Each policy checkpoint saved by `BCTrainer` under `runs/<exp_name>/checkpoints/step_XXXXXXXX/` uses **Schema v2 Artifact** separation (RECAP offline Value training writes its own separate `.pt` checkpoint):
 
 ```text
-src/dobot_nexus/
-├── cli/                       # train / infer / serve
-├── core/                      # 配置、公共协议、Experiment、Artifact
-├── data/                      # LeRobot、图像转换、统计与缓存
-├── training/                  # BCTrainer、runtime、resume
-├── inference/                 # Policy、Session、worker 与 transport
-├── algorithms/recap/          # 回报、优势、离线 Value 训练与标注
-├── modules/value/             # 公共 Value 网络、损失与输入处理
-└── models/                    # Pi0.5、Pi0 及模型自有算子
-
-data_processing/               # 采集数据转换
-examples/                      # 配置、训练与部署启动器
-scripts/env/                   # 模型环境创建与检查
-tests/                         # CPU 模块、契约和入口测试
+step_XXXXXXXX/
+├── manifest.yaml               # model.target, specs, asset manifest, resume status (ready/disabled/pruned); model-supplied metadata (e.g., Pi0.5 numerical profile)
+├── config_resolved.yaml        # Fully resolved training configuration snapshot
+├── deployment/
+│   ├── pytorch/full_weights.pt # Exported deployment weights
+│   ├── nexus/full_weights.pt   # Optional (model-dependent; built-in Pi0 / Pi0.5 do not export this file)
+│   ├── memory/vision.npz       # Optional (Pi0.5-Memory / Pi0-Memory frozen vision encoder only)
+│   └── assets/                 # Conditional (created when a model declares assets such as norm_stats or tokenizer)
+└── resume/                     # Optional (omitted if resume_limit=0 or pruned by retention): DCP shards, trainer v3, per-rank RNG
 ```
 
-模型接入接口在 `models/base.py`。新模型实现 `BaseVLAModule` 和相应的 `BaseDataAdapter`，通过 `model.target` 指向实现。算法流程归 `algorithms/`，共享计算归 `modules/`。详细职责见[架构与模型接入](docs/nexus_architecture_and_integration_guide.md)、[代码接入规则](docs/code_integration_and_change_rules.md)和[贡献约束](AGENTS.md)。
+At inference time, `InferencePolicy` restores the target, dimensions, data mappings, declared assets (`OPENPI_TOKENIZER_PATH` can override the Pi0.5 tokenizer), and Pi0.5 numerical profile; inference compute/parameter precision and outer `autocast` are chosen at launch, and robot clients must match training camera geometry. See [`docs/nexus_architecture_and_integration_guide.md`](docs/nexus_architecture_and_integration_guide.md), [`docs/code_integration_and_change_rules.md`](docs/code_integration_and_change_rules.md), and [`AGENTS.md`](AGENTS.md) for strict module ownership rules.
 
-模块检查命令如下，完整说明见[测试指南](tests/README.md)。
+---
+
+## World Models (WM) & World-Action Models (WAM)
+
+Dobot Nexus plans to expand beyond reactive VLA policies toward a unified **VLA + WM / WAM** platform. The design specification lives under [`docs/wm/`](docs/wm/README.md) (**status: design draft, not yet implemented — no WM CLI or runnable code yet**):
+
+1. **Layer 1 — Video World Model Foundation (Wan2.2, Proposed)**:
+   - Proposes WM contracts and componentized multi-part Artifacts (DiT, VAE, text encoder, LoRA / dual-expert checkpoints) while reusing Nexus's shared config loader, `Experiment`, `Runtime` (Local / Accelerate / FSDP), seeding, and TensorBoard/W&B tracking.
+   - Recommends starting with **Wan2.2 TI2V-5B** (single DiT) followed by **I2V-A14B** (high/low-noise dual experts), beginning with offline generation before adding an asynchronous job server, built on a physical-timestamp video clip contract (`RGB uint8[B,T,H,W,3]`, true `timestamps` & `fps`, episode-level split isolation).
+2. **Layer 2 — Action-Conditioned Dynamics & Longer-Term WAM Direction**:
+   - Plans action-conditioned embodied future prediction $p(o_{t+1:t+H} \mid o_{\le t}, s_t, a_{t:t+H}, \text{prompt})$ with explicit frame-interval action alignment and offline rollout evaluation (explicitly keeping closed-loop planning/control outside first-release WM scope), establishing the building blocks for future **World-Action Models (WAM)**.
+
+Explore the WM design package:
+- [`docs/wm/README.md`](docs/wm/README.md) — Scope and status summary
+- [`docs/wm/PLAN.md`](docs/wm/PLAN.md) — Proposed architecture, interfaces, phased delivery, and acceptance criteria
+- [`docs/wm/PSEUDOCODE.md`](docs/wm/PSEUDOCODE.md) — Proposed data, training, generation, and Artifact call chains
+- [`docs/wm/SOURCES.md`](docs/wm/SOURCES.md) — Reviewed upstream Wan2.2 file snapshots and SHA-256 log
+
+---
+
+## Security, Precision & Quality Verification
+
+- **Deployment & Deserialization Security ([`SECURITY.md`](SECURITY.md))**:
+  - HTTP and WebSocket servers bind to loopback (`127.0.0.1`) by default (on loopback, requests are allowed without a bearer token when `NEXUS_POLICY_TOKEN` is unset). Binding non-loopback interfaces requires a ≥32 UTF-8 byte `NEXUS_POLICY_TOKEN` (`Authorization: Bearer <token>`); `/healthz` is always public.
+  - HTTP `/sessions` issues isolated random session capabilities (900-second / 15-minute idle TTL, up to 16 live sessions, 8 MiB request body limit, serialized model calls; explicit `/predict` `options.num_steps` overrides are bounded to `1–100`). WebSocket bounds incoming and outgoing messages to 32 MiB; Memory WS isolates per-connection history, whereas ordinary BC/RECAP WS shares one prediction handler and seed counter across connections.
+  - Robot TCP v2 (`examples/real_robot/dobot_dual_arm_14d/_runtime/wire.py`) enforces `msgpack` + mutual nonce + sequence numbers + HMAC-SHA256 (`NEXUS_ROBOT_TOKEN`) with no pickle fallback. Authentication does not encrypt payloads—use an encrypted tunnel or VPN across untrusted networks.
+  - Deployment `.pt` weights and training state v3 sidecars use `torch.load(..., weights_only=True)`; exact PyTorch DCP resume is opt-in via `train.trust_resume_checkpoint=true`. Treat YAML configs, `model.target` Python packages, Artifacts, DCP checkpoints, and recorder PKL files as trusted inputs.
+- **Precision Contract ([`docs/precision.md`](docs/precision.md))**:
+  - Pi0/Pi0.5 default to BF16 compute with FP32 master parameters and Adam states during training; inference defaults to BF16 parameters with explicit `model.inference_parameter_precision` and `runtime.autocast` (`auto` / `"off"`) controls.
+- **CPU Contract Tests & Wheel Verification**:
 
 ```bash
 PYTHONPATH=src:. python -m unittest discover -s tests -v
-python -m compileall -q src tests
+python -m compileall -q src tests scripts examples/real_robot
+python scripts/check_wheel.py
 ```
 
-GPU、性能和真机实验工具保存在 Git 忽略的 `local_script/`。待办见 [TODO](TODO.md)。
+---
 
-### 架构与路线图
+<a id="进阶参考"></a>
+## Documentation Hub
 
-![Dobot Nexus training framework](docs/assets/architecture.png)
+| Category | Document | Scope |
+| --- | --- | --- |
+| **Getting Started** | [01 Environment](docs/getting_started/01_environment.md) · [02 Data](docs/getting_started/02_data.md) · [03 Training](docs/getting_started/03_training.md) · [04 Inference](docs/getting_started/04_inference.md) · [05 Deployment](docs/getting_started/05_deployment.md) | End-to-end Pi0.5 BC walkthrough, LeRobot v2.1 checks, and [18D T-shirt folding training (§3.8)](docs/getting_started/03_training.md#38-训练-18-维叠衣服任务) |
+| **Models & Precision** | [Pi0.5 Training & Deploy](docs/pi05_training.md) · [Pi0 Training & Infer](docs/pi0_training.md) · [Precision Matrix](docs/precision.md) · [Environments](docs/environments.md) | Data semantics, normalization, FSDP2, resume, compilation, dtype boundaries, and venvs |
+| **Algorithms & Memory** | [Pi0.5 Memory](docs/pi05_memory.md) · [RECAP / ACP](docs/recap/README.md) · [Data Conversion](data_processing/README.md) | History feature store, offline Value + advantage labeling, and Dobot 14D PKL → LeRobot conversion |
+| **World Models (WM/WAM)** | [WM Overview](docs/wm/README.md) · [WM Plan](docs/wm/PLAN.md) · [Pseudocode](docs/wm/PSEUDOCODE.md) · [Sources](docs/wm/SOURCES.md) | Proposed WM/Wan2.2 architecture draft and embodied dynamics design |
+| **Real-Robot & Recipes** | [Real-Robot Index](examples/real_robot/README.md) · [ATOM D 18D Inference](docs/robots/atom_d_inference.md) · [ATOM W 0759](examples/real_robot/atom_w_0759/README.md) · [ATOM DH 24D](docs/robots/atom_dh_24d.md) · [Dual-Arm 14D](examples/real_robot/dobot_dual_arm_14d/README.md) · [Task Recipes](examples/recipes/README.md) · [ATOM Deployment Recipe](examples/recipes/infer/pi05_atom18.yaml) · [All Examples](examples/README.md) | Robot launchers, hardware contracts, USB/Button/KBD training recipes, and ATOM 18D deployment recipe |
+| **Engineering & Governance** | [Architecture Guide](docs/nexus_architecture_and_integration_guide.md) · [Integration Rules](docs/code_integration_and_change_rules.md) · [AGENTS.md](AGENTS.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) · [Tests Guide](tests/README.md) | Module boundaries, contribution workflow, security boundaries, and CPU contract tests |
 
-![Dobot Nexus policy roadmap](docs/assets/capability-map.png)
+---
 
-## 许可证与开发验证
+## Roadmap
 
-代码采用 [Apache-2.0](LICENSE)，来源说明见 [NOTICE](NOTICE)。模型权重、数据集与第三方
-依赖遵循各自条款。开发与 CPU 验证见 [CONTRIBUTING.md](CONTRIBUTING.md)，
-服务认证、可信文件范围和续训限制见 [SECURITY.md](SECURITY.md)。
+<p align="center">
+  <img src="docs/assets/capability-map.png" alt="Dobot Nexus Capability and Evolution Roadmap" width="96%">
+</p>
 
-训练模板默认启用 TensorBoard。启动监控：
+- **`v1.0` (Implemented)**: Pi0.5 (BC / Memory / RECAP) and Pi0 (BC / Memory / RECAP, 1–32D) training & inference, Schema v2 Artifacts, TensorBoard/W&B tracking, security & precision hardening, CPU contract & wheel CI workflow, Dual-Arm 14D & ATOM 18D real-robot runtimes.
+- **Near-Term VLA Enhancements**: Configurable `zscore`/`quantile` state-action normalization for Pi0 (tracked in [`TODO.md`](TODO.md)) and formal converter support for raw 18D frame-wise collection data.
+- **Next Milestone — WM & WAM Direction**: Implement core WM contracts and proposed Wan2.2 (`TI2V-5B` / `I2V-A14B`) training & generation pipeline, add action-conditioned embodied dynamics prediction, and evolve toward unified World-Action Models (WAM).
 
-```bash
-python -m dobot_nexus.cli.main tensorboard --logdir runs --port 6006
-```
+## License & Provenance
 
-浏览器访问 `http://127.0.0.1:6006`；指标、日志目录和续训行为见
-[训练监控](docs/pi05_training.md#52-可选-wb-与-tensorboard-指标记录)。
+Dobot Nexus is licensed under the **[Apache License 2.0](LICENSE)**.
+
+- Third-party and Dobot provenance notices are recorded in [`NOTICE`](NOTICE), [`src/dobot_nexus/algorithms/recap/NOTICE.md`](src/dobot_nexus/algorithms/recap/NOTICE.md), and [`examples/real_robot/atom_common/NOTICE.md`](examples/real_robot/atom_common/NOTICE.md).
+- Model-owned Apache-2.0 operator adaptations are attributed in [`src/dobot_nexus/models/pi05/torch_core/NOTICE.md`](src/dobot_nexus/models/pi05/torch_core/NOTICE.md) and [`src/dobot_nexus/models/pi0/training/vendor/rlinf_core/NOTICE.md`](src/dobot_nexus/models/pi0/training/vendor/rlinf_core/NOTICE.md).
+- Downloaded pretrained weights, datasets, hardware SDKs, and external Python dependencies remain subject to their respective licenses.

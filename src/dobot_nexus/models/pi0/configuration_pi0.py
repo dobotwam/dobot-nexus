@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import torch
 
+from dobot_nexus.core.config import resolve_autocast
+
 _DEFAULT_CAMERAS = {
     "base": "base_0_rgb",
     "left_wrist": "left_wrist_0_rgb",
@@ -14,6 +16,28 @@ _CAMERA_ALIASES = {
     "wrist_images": "left_wrist_0_rgb",
     "extra_view_images": "right_wrist_0_rgb",
 }
+
+
+def _positive_token_limit(value):
+    if type(value) is not int or value <= 0:
+        raise ValueError("model.max_token_len must be a positive integer.")
+    return value
+
+
+def restore_token_limit(model, saved_model, metadata):
+    """Restore the tokenizer boundary, including the original 48-token BC default."""
+    configured = saved_model.get("max_token_len", Pi0Config.max_token_len)
+    trained = _positive_token_limit(metadata.get("max_token_len", configured))
+    # Original Pi0 BC recorded its fixed 48-token limit even when the config requested another.
+    legacy_bc = (
+        metadata.get("target") == "dobot_nexus.models.pi0.modeling_pi0:Pi0Model"
+        and trained == Pi0Config.max_token_len
+    )
+    if not legacy_bc and _positive_token_limit(configured) != trained:
+        raise ValueError("Artifact max_token_len disagrees with its saved configuration.")
+    if _positive_token_limit(model.get("max_token_len", trained)) != trained:
+        raise ValueError("Cannot override trained model.max_token_len.")
+    model["max_token_len"] = trained
 
 
 def _torch_dtype(value: str, *, field: str) -> torch.dtype:
@@ -46,6 +70,7 @@ class Pi0Config:
     paligemma_variant: str = "gemma_2b"
     action_expert_variant: str = "gemma_300m"
     discrete_state_input: bool = False
+    autocast: str = "auto"
 
     @classmethod
     def from_config(cls, config, *, mode: str) -> Pi0Config:
@@ -75,8 +100,10 @@ class Pi0Config:
         )
         result = cls(
             checkpoint=checkpoint,
+            max_token_len=model.get("max_token_len", cls.max_token_len),
             precision=compute_precision,
             parameter_precision=parameter_precision,
+            autocast=resolve_autocast(config),
             state_dim=int(model.state_dim),
             action_dim=int(model.action_dim),
             action_horizon=int(model.action_horizon),
@@ -90,6 +117,12 @@ class Pi0Config:
             torch_compile=bool(config.get("runtime", {}).get("compile", False)),
         )
         result.validate()
+        if (mode == "infer" and result.torch_dtype == torch.float32
+                and result.parameter_torch_dtype != torch.float32):
+            raise ValueError(
+                "Pi0 FP32 inference compute requires model.inference_parameter_precision='fp32' "
+                "(or omit it to follow model.precision)."
+            )
         if mode == "train":
             if result.parameter_torch_dtype != torch.float32:
                 raise ValueError(
@@ -104,6 +137,11 @@ class Pi0Config:
                     f"dtype during training, got {compute_precision!r} and {runtime_precision!r}."
                 )
         return result
+
+    @property
+    def inference_autocast_enabled(self) -> bool:
+        return (self.autocast == "auto" and self.parameter_torch_dtype != self.torch_dtype
+                and self.torch_dtype != torch.float32)
 
     @property
     def camera_names(self) -> tuple[str, ...]:
@@ -141,6 +179,7 @@ class Pi0Config:
     def validate(self) -> None:
         _ = self.torch_dtype
         _ = self.parameter_torch_dtype
+        _positive_token_limit(self.max_token_len)
         if self.state_dim <= 0 or self.action_dim <= 0 or self.action_horizon <= 0:
             raise ValueError("Pi0 state/action dimensions and horizon must be positive.")
         if self.model_action_dim < max(self.state_dim, self.action_dim):

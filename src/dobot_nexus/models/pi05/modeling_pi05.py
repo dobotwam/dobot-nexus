@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 
 import torch
@@ -17,6 +18,8 @@ from dobot_nexus.models.pi05.data_adapter_pi05 import Pi05DataAdapter
 from dobot_nexus.models.pi05.torch_core.source import load_core_source
 from dobot_nexus.models.pi05.training import load_core_checkpoint
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class Pi05Model(BaseVLAModule):
     """Reference Pi0.5 implementation of the public Nexus model contract."""
@@ -28,6 +31,10 @@ class Pi05Model(BaseVLAModule):
         self.root_config = config
         self.mode = mode
         self.pi05_config = Pi05Config.from_config(config, mode=mode)
+        if mode == "infer":
+            _LOGGER.info("Pi0.5 inference parameters=%s compute=%s autocast=%s enabled=%s",
+                         self.pi05_config.parameter_precision, self.pi05_config.precision,
+                         self.pi05_config.autocast, self.pi05_config.inference_autocast_enabled)
         self.inference_backend = self.pi05_config.inference_backend
         self.core_source = None
         self.core_model = None
@@ -45,6 +52,10 @@ class Pi05Model(BaseVLAModule):
                     self.core_model, enabled=self.pi05_config.torch_compile
                 )
             self._configure_core()
+            if self.pi05_config.autocast == "off":
+                from dobot_nexus.models.pi05.torch_core.numerics import configure_input_dtype_linears
+
+                configure_input_dtype_linears(self.core_model)
         self.loaded_checkpoint = self._load_core_checkpoint()
         meta_parameters = [
             name for name, value in self.core_model.named_parameters() if value.is_meta
@@ -203,7 +214,8 @@ class Pi05Model(BaseVLAModule):
         with torch.inference_mode(), torch.autocast(
             device_type=parameter.device.type,
             dtype=compute_dtype,
-            enabled=parameter.dtype != compute_dtype and compute_dtype != torch.float32,
+            enabled=(self.pi05_config.autocast == "auto"
+                     and parameter.dtype != compute_dtype and compute_dtype != torch.float32),
         ):
             actions = self.torch_engine.sample_actions(
                 encoded.observation,
@@ -241,6 +253,12 @@ class Pi05Model(BaseVLAModule):
     def inference_metadata(self) -> dict:
         return {
             "backend": "torch",
+            "autocast": self.pi05_config.autocast,
+            "autocast_enabled": (
+                self.pi05_config.autocast == "auto"
+                and next(self.core_model.parameters()).dtype != self.pi05_config.torch_dtype
+                and self.pi05_config.torch_dtype != torch.float32
+            ),
             **(self.torch_engine.metadata if self.torch_engine is not None else {
                 "torch_compile": self.pi05_config.torch_compile,
                 "cuda_graph": self.pi05_config.cuda_graph,

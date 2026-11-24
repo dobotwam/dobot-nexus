@@ -154,6 +154,17 @@ class CheckpointResumeTest(unittest.TestCase):
         config.model.jax_export_base_checkpoint = "/missing/old-base"
         self.assertEqual(resume_fingerprint(config), expected)
 
+    def test_autocast_default_preserves_resume_but_off_changes_identity(self):
+        config = _config("unused", name="resume", max_steps=2)
+        original = resume_fingerprint(config)
+        config.runtime.autocast = "auto"
+        self.assertEqual(resume_fingerprint(config), original)
+        config.runtime.autocast = "off"
+        disabled = resume_fingerprint(config)
+        self.assertNotEqual(disabled, original)
+        config.runtime.autocast = False
+        self.assertEqual(resume_fingerprint(config), disabled)
+
     def test_deployment_requires_full_ordinary_tensors(self):
         class ShardLikeTensor(torch.Tensor):
             pass

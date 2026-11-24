@@ -20,8 +20,10 @@ from dobot_nexus.data import (
     load_norm_stats,
     normalize,
     unnormalize,
+    validate_norm_stats,
 )
 from dobot_nexus.data.images import convert_image as _convert_image
+from dobot_nexus.data.images import resize_with_pad as _resize_with_pad
 from dobot_nexus.data.lerobot import (
     LeRobotNormStatsSpec,
     resolve_or_compute_lerobot_norm_stats,
@@ -169,25 +171,6 @@ def _pad_last_dim(value: np.ndarray, target: int) -> np.ndarray:
     return np.pad(value, widths)
 
 
-def _resize_with_pad(image: np.ndarray, size: int = 224) -> np.ndarray:
-    if image.shape[:2] == (size, size):
-        return image
-    try:
-        from PIL import Image
-    except ImportError as exc:
-        raise ImportError("Pi0.5 image preprocessing requires Pillow.") from exc
-    source = Image.fromarray(image)
-    width, height = source.size
-    ratio = max(width / size, height / size)
-    resized_width = max(1, int(width / ratio))
-    resized_height = max(1, int(height / ratio))
-    resampling = getattr(Image, "Resampling", Image).BILINEAR
-    resized = source.resize((resized_width, resized_height), resample=resampling)
-    padded = Image.new("RGB", (size, size), 0)
-    padded.paste(resized, ((size - resized_width) // 2, (size - resized_height) // 2))
-    return np.asarray(padded, dtype=np.uint8)
-
-
 class _Tokenizer:
     def __init__(self, path: Path, max_length: int) -> None:
         self.path = path
@@ -231,13 +214,18 @@ class _Tokenizer:
         return np.asarray(tokens, dtype=np.int64), np.asarray(mask, dtype=np.bool_)
 
 
+def dataset_image_fields(raw_images: Mapping[str, str]) -> dict[str, str]:
+    """Resolve dataset columns by the core slots populated during training."""
+    return {
+        PUBLIC_CAMERA_TO_CORE.get(str(name), str(name)): str(column)
+        for name, column in raw_images.items()
+    }
+
+
 def _field_mapping(config: Any) -> tuple[dict[str, str], str, str, str | None]:
     mapping = config.get("data", {}).get("field_mapping", {})
     raw_images = dict(mapping.get("images", {}))
-    images: dict[str, str] = {}
-    for configured_name, source in raw_images.items():
-        core_name = PUBLIC_CAMERA_TO_CORE.get(str(configured_name), str(configured_name))
-        images[core_name] = str(source)
+    images = dataset_image_fields(raw_images)
     if set(images) != set(CORE_IMAGE_KEYS):
         raise ValueError(
             "data.field_mapping.images must map base, left_wrist, and right_wrist; "
@@ -330,19 +318,7 @@ class Pi05Pipeline:
             ("state", self.model_config.state_dim),
             ("actions", self.model_config.action_dim),
         ):
-            stats = self.stats[name]
-            if stats.mean.shape[-1] < dimension or stats.std.shape[-1] < dimension:
-                raise ValueError(f"{name} norm stats do not cover dimension {dimension}.")
-            if self.normalization == "quantile":
-                if stats.q01 is None or stats.q99 is None:
-                    raise ValueError(f"{name} quantile normalization requires q01/q99 statistics.")
-                if (
-                    stats.q01.ndim != 1 or stats.q01.shape != stats.q99.shape
-                    or stats.q01.shape[-1] < dimension
-                    or not np.isfinite(stats.q01).all() or not np.isfinite(stats.q99).all()
-                    or np.any(stats.q99 < stats.q01)
-                ):
-                    raise ValueError(f"{name} q01/q99 statistics have invalid dimensions or order.")
+            validate_norm_stats(self.stats[name], dimension, mode=self.normalization, name=name)
         if str(self.root_config.get("task", "")).lower() == "train":
             self.root_config.setdefault("data", {})["norm_stats_path"] = str(
                 self.norm_stats_path
@@ -354,20 +330,10 @@ class Pi05Pipeline:
         return self.stats
 
     def normalize(self, value: np.ndarray, name: str) -> np.ndarray:
-        stats = self._resolved_stats()[name]
-        if self.normalization == "zscore":
-            return normalize(value, stats)
-        dimension = value.shape[-1]
-        low, high = stats.q01[..., :dimension], stats.q99[..., :dimension]
-        return (value - low) / (high - low + 1e-6) * 2.0 - 1.0
+        return normalize(value, self._resolved_stats()[name], mode=self.normalization)
 
     def unnormalize(self, value: np.ndarray, name: str) -> np.ndarray:
-        stats = self._resolved_stats()[name]
-        if self.normalization == "zscore":
-            return unnormalize(value, stats)
-        dimension = value.shape[-1]
-        low, high = stats.q01[..., :dimension], stats.q99[..., :dimension]
-        return (value + 1.0) / 2.0 * (high - low + 1e-6) + low
+        return unnormalize(value, self._resolved_stats()[name], mode=self.normalization)
 
     def _prompt(self, frame: Mapping[str, Any]) -> str:
         prompt = frame.get("prompt")

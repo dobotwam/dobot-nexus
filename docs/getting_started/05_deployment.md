@@ -6,6 +6,7 @@
 硬件入口为 `start_dobot_dual_arm_14d_server.sh`。
 准备好通过离线推理检查的正式 Artifact，以及机器人项目已验证可用的硬件环境。
 其他机器人应使用匹配其动作维度、字段和控制协议的硬件适配器。
+ATOM D 双臂叠衣的 PC2 单机部署与运行命令见 [ATOM D 推理指南](../robots/atom_d_inference.md)。
 ATOM W + DH 的字段定义见 [24 维本体协议](../robots/atom_dh_24d.md)。
 
 ## 5.1 哪台机器运行哪个进程
@@ -17,7 +18,7 @@ robot-server  ←──── TCP 12006 ────→  robot-client  ←──
 相机、状态、硬件执行                    转发观测和动作                      模型推理
 ```
 
-需要三个终端，建议按 **policy-server → robot-server → robot-client** 顺序启动。
+需要三个终端，按 **policy-server → robot-server → 输入 `model` 交接 → robot-client** 顺序启动。
 
 | 进程 | 机器 | Python 环境 |
 |---|---|---|
@@ -26,7 +27,7 @@ robot-server  ←──── TCP 12006 ────→  robot-client  ←──
 | robot-server | 机器人主机 | 硬件项目的 Python 环境 |
 
 GPU 主机保留 Nexus 仓库和完整 Artifact。机器人主机可以使用完整仓库，也可以完整复制
-`examples/pi05_real_robot/`，包括 `_runtime/`。以下机器人命令采用完整仓库路径。
+`examples/real_robot/dobot_dual_arm_14d/`，包括 `_runtime/`。以下机器人命令采用完整仓库路径。
 
 ## 5.2 终端 A，在 GPU 主机启动策略服务
 
@@ -36,7 +37,7 @@ export PI05_ARTIFACT=/path/to/run/checkpoints/step_00010000
 
 POLICY_PYTHON="$PWD/.venvs/pi05/bin/python" \
 GPU=0 POLICY_PORT=8000 \
-bash examples/pi05_real_robot/start_policy_server.sh \
+bash examples/real_robot/start_policy_server.sh \
   "$PI05_ARTIFACT" --no-torch-compile --no-cuda-graph
 ```
 
@@ -115,11 +116,24 @@ export RIGHT_TELOP_PORT=/dev/YOUR_RIGHT_TELEOP
 
 ```bash
 ROBOT_EXECUTE=0 HOME_ON_START=0 \
-bash examples/pi05_real_robot/start_dobot_dual_arm_14d_server.sh
+bash examples/real_robot/dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 ```
 
 此模式仍会初始化硬件环境、读取相机和机器人状态，模型动作路径通过日志显示预测值。
-`robot.step()` 由 `ROBOT_EXECUTE` 控制。保留终端，等待客户端连接。
+`robot.step()` 由 `ROBOT_EXECUTE` 控制。
+
+机器人默认处于 `positioning_paused`，此时尚不接受模型客户端连接。保持服务在前台交互终端
+运行，准备好初始姿态后，在**运行机器人服务的终端 B** 输入下面这一行并按 Enter
+（这是服务的交互命令，不是在另一个 shell 执行）：
+
+```text
+model
+```
+
+等日志 `[control-state]` 中的 `state` 变为 `model_waiting`，再启动第 5.4 节的客户端；
+连接并完成认证后状态变为 `model_control`。dry-run 也需要这一步。
+如果启用了手动跟随，先分别输入 `adjust-left-on`、`adjust-right-on` 并按 Enter，
+将两臂恢复到暂停跟随的调整状态，再输入 `model`。
 
 ## 5.4 终端 C，在 GPU 主机启动通信客户端
 
@@ -133,7 +147,7 @@ BRIDGE_MODE=standard \
 ROBOT_HOST=YOUR_ROBOT_HOST_IP ROBOT_PORT=12006 \
 POLICY_HOST=127.0.0.1 POLICY_PORT=8000 \
 ACTIONS_PER_RESPONSE=8 \
-bash examples/pi05_real_robot/start_robot_client.sh
+bash examples/real_robot/dobot_dual_arm_14d/start_robot_client.sh
 ```
 
 客户端从机器人接收观测，将任务和图像发给策略服务，再把动作发回机器人。
@@ -147,11 +161,12 @@ bash examples/pi05_real_robot/start_robot_client.sh
 
 1. 在客户端和机器人服务终端分别按 `Ctrl+C` 停止进程。
 2. 机器人终端保留上面设置的环境变量，运行下面的命令。
-3. GPU 主机重新执行第 5.4 节的客户端命令。
+3. 按第 5.3 节在机器人终端输入 `model`，确认状态为 `model_waiting`。
+4. GPU 主机重新执行第 5.4 节的客户端命令。
 
 ```bash
 ROBOT_EXECUTE=1 HOME_ON_START=0 CONFIRM_EACH_ACTION=1 \
-bash examples/pi05_real_robot/start_dobot_dual_arm_14d_server.sh
+bash examples/real_robot/dobot_dual_arm_14d/start_dobot_dual_arm_14d_server.sh
 ```
 
 `HOME_ON_START=0` 采用当前姿态开始，按训练任务要求手动准备初始场景。
@@ -159,12 +174,16 @@ bash examples/pi05_real_robot/start_dobot_dual_arm_14d_server.sh
 按照机器人终端提示确认执行，先逐步观察关节方向和夹爪响应。
 发现异常时使用硬件急停并停止当前测试。
 
+客户端断开或任务结束后，机器人恢复 `positioning_paused`。再次连接前需重新输入 `model`；
+服务不会自动重新交出控制权。如果已过早启动客户端，完成交接后重新运行客户端命令。
+
 ## 5.6 常见问题
 
 | 现象 | 检查位置 |
 |---|---|
 | healthz 连接失败 | policy 终端是否加载完成，端口是否一致 |
 | 连接机器人超时 | `ROBOT_HOST`、`ROBOT_PORT`、两机网络与防火墙 |
+| 客户端连接后立即断开，提示 handoff not ready | 先在机器人服务终端输入 `model`，确认 `model_waiting` 后重启客户端 |
 | 找不到 `dobot_environment` | `ROBOT_PYTHON`、`ENV_SRC` 和硬件项目安装 |
 | 维度不匹配 | Artifact 是否为当前 14 维双臂任务 |
 | 图像错误 | 相机序列号、公共映射、颜色顺序和 ROI |
@@ -173,4 +192,4 @@ bash examples/pi05_real_robot/start_dobot_dual_arm_14d_server.sh
 
 这套 TCP/WebSocket 链路用于受控机器人内网。TCP 使用带认证的 msgpack，机器人与桥接端需设置相同的 `NEXUS_ROBOT_TOKEN`。
 WebSocket 服务部署要求见安全说明。
-BC/RECAP/Memory 的完整参数、Home 控制和历史协议见[真机启动器参考](../../examples/pi05_real_robot/README.md)。
+BC/RECAP/Memory 的完整参数、Home 控制和历史协议见[真机启动器参考](../../examples/real_robot/dobot_dual_arm_14d/README.md)。

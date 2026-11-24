@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 import torch
 
+from dobot_nexus.core.config import resolve_autocast
+
 TRAINING_RECIPE = "openpi_augmax041_fp32_v1"
 
 
@@ -142,6 +144,7 @@ class Pi05Config:
     action_expert_variant: str = "gemma_300m"
     discrete_state_input: bool = True
     operator_numerics: str = "legacy"
+    autocast: str = "auto"
 
     @classmethod
     def from_config(cls, config, *, mode: str) -> Pi05Config:
@@ -182,6 +185,7 @@ class Pi05Config:
             checkpoint=checkpoint,
             precision=compute_precision,
             parameter_precision=parameter_precision,
+            autocast=resolve_autocast(config),
             state_dim=model.state_dim,
             action_dim=model.action_dim,
             action_horizon=model.action_horizon,
@@ -204,6 +208,12 @@ class Pi05Config:
             operator_numerics=operator_numerics,
         )
         result.validate()
+        if (mode == "infer" and result.torch_dtype == torch.float32
+                and result.parameter_torch_dtype != torch.float32):
+            raise ValueError(
+                "Pi0.5 FP32 inference compute requires model.inference_parameter_precision='fp32' "
+                "(or omit it to follow model.precision)."
+            )
         if (mode == "infer"
                 and result.torch_compile and result.torch_compile_mode == "openpi"
                 and result.operator_numerics != "openpi"):
@@ -233,6 +243,11 @@ class Pi05Config:
                     f"{runtime_precision!r}."
                 )
         return result
+
+    @property
+    def inference_autocast_enabled(self) -> bool:
+        return (self.autocast == "auto" and self.parameter_torch_dtype != self.torch_dtype
+                and self.torch_dtype != torch.float32)
 
     @property
     def camera_names(self) -> tuple[str, ...]:

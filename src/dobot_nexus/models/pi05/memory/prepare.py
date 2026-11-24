@@ -10,15 +10,11 @@ import numpy as np
 
 def prepare_features(config, *, device="cuda:0", batch_size=16):
     from dobot_nexus.models.pi05.configuration_pi05 import Pi05Config
-    from dobot_nexus.models.pi05.data.pipeline import (
-        PUBLIC_CAMERA_TO_CORE,
-        Pi05Pipeline,
-        _convert_image,
-    )
+    from dobot_nexus.models.pi05.data.pipeline import Pi05Pipeline, _convert_image
     from dobot_nexus.models.pi05.data.source import build_source
 
     from .configuration import MODEL_TARGET, resolve_config
-    from .feature_store import write_episode
+    from .feature_store import history_image_field, write_episode
     from .torch_vision import TorchFrameTokenEncoder
 
     if config.model.target != MODEL_TARGET:
@@ -37,9 +33,7 @@ def prepare_features(config, *, device="cuda:0", batch_size=16):
     data.pop("global_batch_size", None)
     data.pop("norm_stats_path", None)
     pipeline = Pi05Pipeline(config, Pi05Config.from_config(config, mode="train"))
-    if memory.camera not in PUBLIC_CAMERA_TO_CORE:
-        raise ValueError(f"Unknown memory camera: {memory.camera}")
-    image_key = pipeline.image_fields[PUBLIC_CAMERA_TO_CORE[memory.camera]]
+    image_key = history_image_field(pipeline, memory.camera)
     source = build_source(
         data_path=data.path,
         action_key=pipeline.action_key,
@@ -71,6 +65,7 @@ def prepare_features(config, *, device="cuda:0", batch_size=16):
         write_episode(
             output, episode, np.concatenate(features), tasks,
             config=memory, dataset_id=data.memory_dataset_id,
+            image_field=image_key, language_field=pipeline.language_key, schema_version=2,
         )
         completed.add(episode)
 
@@ -100,7 +95,9 @@ def main(argv=None):
     parser.add_argument("--config", required=True, help="Memory training template or recipe.")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--batch-size", type=int, default=16, help="Frozen vision encoding batch.")
-    parser.add_argument("--override", action="append", default=[], help="Training config key=value.")
+    parser.add_argument(
+        "--override", action="append", default=[], help="Training config key=value."
+    )
     args = parser.parse_args(argv)
     from dobot_nexus.core.config import load_config
 

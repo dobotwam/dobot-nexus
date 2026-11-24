@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,67 @@ BC_CONFIGS = {
 
 
 class UserExamplesTest(unittest.TestCase):
+    def test_documented_pi0_memory_infer_command(self):
+        template = INFER_CONFIGS / "pi0_memory.yaml"
+        command, = [shlex.split(line[2:]) for line in template.read_text().splitlines()
+                    if line.startswith("# python -m ")]
+        self.assertEqual(command[:3], ["python", "-m", "dobot_nexus.models.pi0.memory.infer"])
+        self.assertEqual(ROOT / command[command.index("--config") + 1], template)
+        result = subprocess.run([sys.executable, *command[1:], "--help"], cwd=ROOT,
+                                capture_output=True, text=True, check=True, timeout=30)
+        for flag in ("--config", "--input", "--output"):
+            self.assertIn(flag, result.stdout)
+
+    def test_launchers_keep_the_callers_python_after_changing_directory(self):
+        with tempfile.TemporaryDirectory(prefix="nexus caller ") as directory:
+            caller = Path(directory).resolve()
+            probe = caller / "python-probe"
+            probe.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, sys\n"
+                "if sys.argv[1] == '-c':\n"
+                "    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+                "print(json.dumps({'python': sys.argv[0], 'cwd': os.getcwd(), 'args': sys.argv[1:]}))\n"
+            )
+            probe.chmod(0o755)
+            executable = caller / ".venv/bin/python"
+            executable.parent.mkdir(parents=True)
+            executable.symlink_to(probe)
+            (caller / "artifact").mkdir()
+            (caller / "observation.npz").touch()
+            launches = [
+                ("train.sh", ["--config", str(BC_CONFIGS["pi05"]), "--gpus", "0"],
+                 ["-m", "dobot_nexus.cli.main", "train"]),
+                ("train.sh", ["--config", str(BC_CONFIGS["pi05"]), "--gpus", "0,1"],
+                 ["-m", "torch.distributed.run"]),
+                ("infer.sh", ["--model", "pi05", "--artifact", "artifact", "--input", "observation.npz"],
+                 ["-m", "dobot_nexus.cli.main", "infer"]),
+                ("infer.sh", ["--model", "pi05", "--artifact", "artifact", "--serve"],
+                 ["-m", "dobot_nexus.cli.main", "serve"]),
+            ]
+            for script, arguments, prefix in launches:
+                for selection in ("argument", "environment", "path", "absolute"):
+                    with self.subTest(script=script, arguments=prefix, selection=selection):
+                        env = {**os.environ, "PYTHON_BIN": "python"}
+                        options = []
+                        if selection == "argument":
+                            options = ["--python", ".venv/bin/python"]
+                        elif selection == "environment":
+                            env["PYTHON_BIN"] = ".venv/bin/python"
+                        elif selection == "path":
+                            env["PATH"] = ".venv/bin:" + env["PATH"]
+                        else:
+                            options = ["--python", str(executable)]
+                        result = subprocess.run(
+                            [str(EXAMPLES / script), *arguments, *options],
+                            cwd=caller, env=env, capture_output=True, text=True, timeout=30,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        child = json.loads(result.stdout)
+                        self.assertEqual(child["python"], str(executable))
+                        self.assertEqual(child["cwd"], str(ROOT))
+                        self.assertEqual(child["args"][:len(prefix)], prefix)
+
     def test_single_gpu_child_does_not_inherit_torchrun_process_identity(self):
         inherited = {
             "WORLD_SIZE": "8", "RANK": "3", "LOCAL_RANK": "3",
@@ -100,6 +162,8 @@ class UserExamplesTest(unittest.TestCase):
 
         expected_configs = {
             "pi0.yaml",
+            "pi0_recap.yaml",
+            "pi0_memory.yaml",
             "pi05.yaml",
             "pi05_recap.yaml",
             "pi05_memory.yaml",
@@ -127,15 +191,13 @@ class UserExamplesTest(unittest.TestCase):
             self.assertTrue(config.runtime.fsdp.enabled)
         self.assertEqual(
             {path.name for path in INFER_CONFIGS.glob("*.yaml")},
-            {
-                "pi0.yaml",
-                "pi05.yaml",
-                "pi05_recap.yaml",
-                "pi05_memory.yaml",
-            },
+            expected_configs,
         )
         for path in INFER_CONFIGS.glob("*.yaml"):
-            self.assertEqual(load_config(path, expected_task="infer").task, "infer")
+            config = load_config(path, expected_task="infer")
+            self.assertEqual(config.task, "infer")
+            if path.name in {"pi0_recap.yaml", "pi0_memory.yaml"}:
+                self.assertEqual(config.server.host, "127.0.0.1")
 
         self.assertEqual(list(EXAMPLES.rglob("norm_stats.json")), [])
 

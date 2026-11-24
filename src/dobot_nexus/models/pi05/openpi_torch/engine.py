@@ -59,6 +59,11 @@ def _tensor_leaves(value):
     return [tensor for child in children for tensor in _tensor_leaves(child)]
 
 
+def _autocast_signature(device_type):
+    enabled = torch.is_autocast_enabled(device_type)
+    return (enabled, torch.get_autocast_dtype(device_type) if enabled else None)
+
+
 @dataclasses.dataclass
 class _CapturedSampler:
     graph: Any
@@ -223,7 +228,9 @@ class TorchPi05Engine:
                 return self._sample(inputs, num_steps)
             if any(tensor.device != device for tensor in _tensor_leaves(inputs)):
                 raise ValueError("All Pi0.5 CUDA Graph inputs must be on the same CUDA device.")
-            key = (num_steps, _signature(inputs))
+            # Capture bakes in autocast's operator casts and cached modulations.
+            # Identical input dtypes do not imply identical internal arithmetic.
+            key = (num_steps, _signature(inputs), _autocast_signature(device.type))
             with torch.cuda.device(device):
                 entry = self._graphs.get(key)
                 if entry is None:
@@ -231,7 +238,14 @@ class TorchPi05Engine:
                         _, evicted = self._graphs.popitem(last=False)
                         evicted.ready.synchronize()
                         del evicted
-                    entry = self._capture(inputs, num_steps, device)
+                    # AMP's weight cache can retain casts made during warmup
+                    # outside the graph pool. Record those casts in the graph
+                    # instead, so replay never references a freed cache tensor.
+                    with torch.autocast(
+                        device.type, enabled=torch.is_autocast_enabled(device.type),
+                        dtype=torch.get_autocast_dtype(device.type), cache_enabled=False,
+                    ):
+                        entry = self._capture(inputs, num_steps, device)
                     self._graphs[key] = entry
                 self._graphs.move_to_end(key)
                 stream = torch.cuda.current_stream(device)

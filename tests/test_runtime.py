@@ -47,6 +47,38 @@ def _config(*, fsdp: bool) -> Config:
 
 
 class RuntimeTest(unittest.TestCase):
+    def test_local_autocast_off_disables_inherited_context_without_casting_parameters(self):
+        config = Config(runtime=Config(device="cpu", precision="bf16", autocast="off"),
+                        train=Config())
+        runtime = LocalRuntime(config)
+        model = torch.nn.Linear(4, 4)
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            with runtime.autocast():
+                self.assertFalse(torch.is_autocast_enabled("cpu"))
+                self.assertEqual(model(torch.ones(1, 4)).dtype, torch.float32)
+            self.assertTrue(torch.is_autocast_enabled("cpu"))
+        self.assertEqual(model.weight.dtype, torch.float32)
+        self.assertFalse(runtime.autocast_enabled)
+        config.runtime.device = "cuda"
+        config.runtime.autocast = "auto"
+        runtime = LocalRuntime(config)
+        self.assertTrue(runtime.autocast_enabled)
+        with mock.patch("torch.autocast") as autocast:
+            runtime.autocast()
+        autocast.assert_called_once_with(device_type="cuda", dtype=torch.bfloat16)
+
+    @unittest.skipIf(DistributedType is None, "accelerate is not installed")
+    def test_non_fsdp_accelerate_can_explicitly_disable_autocast(self):
+        config = _config(fsdp=False)
+        config.runtime.autocast = "off"
+        with mock.patch("accelerate.Accelerator", return_value=SimpleNamespace(
+            device=torch.device("cpu"),
+        )) as constructor:
+            runtime = AccelerateRuntime(config)
+        self.assertEqual(constructor.call_args.kwargs["mixed_precision"], "no")
+        with torch.autocast("cpu", dtype=torch.bfloat16), runtime.autocast():
+            self.assertFalse(torch.is_autocast_enabled("cpu"))
+
     def test_build_runtime_persists_resolved_strategy_before_checkpoint_fingerprint(self):
         from dobot_nexus.core.artifacts import resume_fingerprint
         from dobot_nexus.core.config import clone_config

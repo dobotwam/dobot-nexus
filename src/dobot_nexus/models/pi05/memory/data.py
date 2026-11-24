@@ -7,8 +7,9 @@ import torch
 
 from dobot_nexus.models.pi05.data.pipeline import EncodedObservation, Pi05Pipeline
 from dobot_nexus.models.pi05.data_adapter_pi05 import Pi05DataAdapter
+from dobot_nexus.modules.memory.feature_store import configured_cache_bytes
 
-from .feature_store import FrameFeatureStore
+from .feature_store import FrameFeatureStore, history_image_field
 from .types import MemoryObservationBatch, MemorySnapshot
 
 
@@ -26,7 +27,11 @@ class MemoryPipeline(Pi05Pipeline):
                 )
             self.store = FrameFeatureStore(
                 path, memory_config, dataset_id=identity,
+                image_field=history_image_field(self, memory_config.camera),
+                language_field=self.language_key,
+                confirmed_legacy_columns=root_config.data.get("memory_legacy_columns"),
                 max_cached_episodes=root_config.data.get("memory_cache_episodes", 8),
+                max_cached_bytes=configured_cache_bytes(root_config.data),
             )
 
     def transform_frame(self, frame):
