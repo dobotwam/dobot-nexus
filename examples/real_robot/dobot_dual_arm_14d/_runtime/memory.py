@@ -25,14 +25,24 @@ import numpy as np
 if __package__:
     from . import dobot_dual_arm_14d as base
     from .history import (
-        HISTORY_CODEC, HISTORY_PROTOCOL, MAX_HISTORY_CHUNK, ObservationHistory,
-        SerializedEnvironment, decode_history_frames, encode_history_frames,
+        HISTORY_CODEC,
+        HISTORY_PROTOCOL,
+        MAX_HISTORY_CHUNK,
+        ObservationHistory,
+        SerializedEnvironment,
+        decode_history_frames,
+        encode_history_frames,
     )
 else:
     import dobot_dual_arm_14d as base
     from history import (
-        HISTORY_CODEC, HISTORY_PROTOCOL, MAX_HISTORY_CHUNK, ObservationHistory,
-        SerializedEnvironment, decode_history_frames, encode_history_frames,
+        HISTORY_CODEC,
+        HISTORY_PROTOCOL,
+        MAX_HISTORY_CHUNK,
+        ObservationHistory,
+        SerializedEnvironment,
+        decode_history_frames,
+        encode_history_frames,
     )
 
 
@@ -94,7 +104,8 @@ class MemoryRobotRuntime(base.RobotRuntimeEnv):
                  f"count={len(packet['frames'])} action_cursor={cursor}")
         base.log(f"[memory] capture reads={capture['reads']} grid_frames={capture['slots']} "
                  f"observed_fps={capture['observed_fps']:.2f} target_fps={self.history.fps:g} "
-                 f"repeated_slots={capture['repeated_slots']} max_source_gap_s={capture['max_source_gap_s']:.4f}")
+                 f"repeated_slots={capture['repeated_slots']} "
+                 f"max_source_gap_s={capture['max_source_gap_s']:.4f}")
         return message
 
     def exchange_observation(self, connection, observation):
@@ -118,7 +129,8 @@ class MemoryRobotRuntime(base.RobotRuntimeEnv):
             chunk.pop("frames")
             state = self.history.status()
             base.log(f"[memory] sending history frames={indices[0]}..{indices[-1]} "
-                     f"raw_bytes={sum(f.nbytes for f in frames)} compressed_bytes={sum(map(len, blobs))} "
+                     f"raw_bytes={sum(f.nbytes for f in frames)} "
+                     f"compressed_bytes={sum(map(len, blobs))} "
                      f"pending={state['pending']}/{state['capacity']}")
             wire_bytes = base.send_message(connection, {
                 "type": "history", "protocol": base.PROTOCOL_VERSION,
@@ -130,15 +142,18 @@ class MemoryRobotRuntime(base.RobotRuntimeEnv):
             expected = {"episode_id": packet["episode_id"], "frame_index": indices[-1]}
             if (reply.get("type") != "history_ack" or reply.get("cursor") != observation["cursor"]
                     or reply.get("history_ack") != expected):
-                raise ValueError("Missing/mismatched chunk history acknowledgement; update both Memory scripts.")
+                raise ValueError("Missing/mismatched chunk history acknowledgement; "
+                                 "update both Memory scripts.")
             self.history.acknowledge(**expected)
             state = self.history.status()
             base.log(f"[memory] acknowledged frame={indices[-1]} wire_bytes={wire_bytes} "
-                     f"compress_ms={(encoded - started) * 1000:.1f} send_ms={(sent - encoded) * 1000:.1f} "
+                     f"compress_ms={(encoded - started) * 1000:.1f} "
+                     f"send_ms={(sent - encoded) * 1000:.1f} "
                      f"ack_wait_ms={(time.perf_counter() - sent) * 1000:.1f} "
                      f"pending={state['pending']}/{state['capacity']}")
-        base.log(f"[memory] history ready frame={packet['frame_index']} frames={len(packet['frames'])} "
-                 f"wire_bytes={total_wire_bytes} total_ms={(time.perf_counter() - upload_started) * 1000:.1f}")
+        base.log(f"[memory] history ready frame={packet['frame_index']} "
+                 f"frames={len(packet['frames'])} wire_bytes={total_wire_bytes} "
+                 f"total_ms={(time.perf_counter() - upload_started) * 1000:.1f}")
         # Images and history cutoff are the original snapshot, even if capture
         # continued during upload. Never include future frames in this action.
         observation["history"] = {
@@ -183,7 +198,7 @@ def validate_base_script():
         ("run_robot_server", ("runtime_factory",)),
         ("run_openpi_client", ("observation_handler", "warmup_handler", "message_handler")),
         ("send_message", ()),
-        ("warmup_openpi_policy", ("use_history",)),
+        ("build_openpi_obs", ("state_dim",)),
     ):
         function = getattr(base, name, None)
         if not callable(function):
@@ -208,6 +223,19 @@ def validate_base_script():
         )
 
 
+def _history_wire_camera(metadata):
+    if "history_wire_camera" not in metadata and metadata.get("history_camera", "base") != "base":
+        raise ValueError("This robot transport supplies top_camera/base history only.")
+    camera = metadata.get("history_wire_camera", "top_camera")
+    if camera != "top_camera":
+        raise ValueError("This robot transport supplies top_camera history only.")
+    return camera
+
+
+def _openpi_observation(message, task, state_dim):
+    return {**base.build_openpi_obs(message, task, state_dim=state_dim), "protocol": "openpi"}
+
+
 class MemoryBridge:
     """Translate dense robot observations into existing policy control messages."""
 
@@ -228,8 +256,13 @@ class MemoryBridge:
 
     @staticmethod
     def warmup(policy, task, *, use_history=False, state_dim=14):
-        # Reuse the wire image/state conversion without the old sparse-history notice.
-        base.warmup_openpi_policy(policy, task, use_history=False, state_dim=state_dim)
+        if use_history and hasattr(policy, "get_server_metadata"):
+            _history_wire_camera(policy.get_server_metadata())
+        state_dim = base.positive_dimension(state_dim, "state_dim")
+        image = np.zeros((224, 224, 3), dtype=np.uint8)
+        message = {"state": np.zeros(state_dim, dtype=np.float32),
+                   "images": dict.fromkeys(base.IMAGE_NAMES, image)}
+        policy.infer(_openpi_observation(message, task, state_dim))
         if use_history:
             if policy.infer({"reset": True}).get("reset_finished") is not True:
                 raise RuntimeError("Policy did not acknowledge warmup history reset.")
@@ -249,7 +282,7 @@ class MemoryBridge:
         use_history = bool(metadata.get("use_history"))
         packet = message.get("history")
         dimensions = base.CommunicationSpec.from_metadata(metadata)
-        observation = base.build_openpi_obs(message, task, state_dim=dimensions.state_dim)
+        observation = _openpi_observation(message, task, dimensions.state_dim)
         if packet is None and not use_history:
             result = policy.infer(observation)
             dimensions.validate_actions(result["actions"])
@@ -266,20 +299,26 @@ class MemoryBridge:
                 raise ValueError("Current top image must match the history cutoff frame.")
         else:
             # Compatibility for callers supplying a single, uncompressed packet.
-            self._upload(policy, packet, task, metadata, message["cursor"], current_image=current_image)
+            self._upload(policy, packet, task, metadata, message["cursor"],
+                         current_image=current_image)
         started = time.perf_counter()
-        result = policy.infer({**observation, "step_index": self.last_frame} if use_history else observation)
+        if use_history:
+            observation["step_index"] = self.last_frame
+        result = policy.infer(observation)
         dimensions.validate_actions(result["actions"])
         self.awaiting_observation = False
-        base.log(f"[memory] infer frame={self.last_frame} sample_actions_ms={(time.perf_counter() - started) * 1000:.1f}")
-        return {**result, "history_ack": {"episode_id": self.episode_id, "frame_index": self.last_frame}}
+        base.log(f"[memory] infer frame={self.last_frame} "
+                 f"sample_actions_ms={(time.perf_counter() - started) * 1000:.1f}")
+        ack = {"episode_id": self.episode_id, "frame_index": self.last_frame}
+        return {**result, "history_ack": ack}
 
     def handle_message(self, policy, message, task, metadata):
         if self.failed:
             raise RuntimeError("History request failed; reconnect to start a new trial.")
         try:
             if message.get("type") != "history" or message.get("protocol") != base.PROTOCOL_VERSION:
-                raise ValueError("Unsupported Memory transport message; update both Memory scripts.")
+                raise ValueError("Unsupported Memory transport message; "
+                                 "update both Memory scripts.")
             packet = message["history"]
             frames = decode_history_frames(packet.get("codec"), packet["compressed_frames"])
             self._upload(policy, {**packet, "frames": frames}, task, metadata, message["cursor"])
@@ -291,8 +330,7 @@ class MemoryBridge:
 
     def _upload(self, policy, packet, task, metadata, cursor, *, current_image=None):
         use_history = bool(metadata.get("use_history"))
-        if use_history and metadata.get("history_camera", "base") != "base":
-            raise ValueError("This robot transport supplies top_camera/base history only.")
+        wire_camera = _history_wire_camera(metadata) if use_history else None
         if not isinstance(packet, dict) or packet.get("protocol") != HISTORY_PROTOCOL:
             raise ValueError("Dense history is missing; run robot-server with the _memory script.")
         episode = packet.get("episode_id")
@@ -331,13 +369,17 @@ class MemoryBridge:
             if captures.shape != timestamps.shape or not np.isfinite(captures).all():
                 raise ValueError("History capture timestamps must align with resampled slots.")
             origin = timestamps[0] if new_episode else self.grid_origin
-            if not np.allclose(timestamps, origin + np.asarray(indices) / self.history_fps, rtol=0, atol=1e-6):
+            grid = origin + np.asarray(indices) / self.history_fps
+            if not np.allclose(timestamps, grid, rtol=0, atol=1e-6):
                 raise ValueError("Resampled history does not follow the configured time grid.")
-            source_sequence = captures if new_episode else np.r_[self.last_capture_timestamp, captures]
-            if np.any(np.diff(source_sequence) < 0) or np.any(np.abs(captures - timestamps) > self.max_gap_s + 1e-6):
+            source_sequence = (captures if new_episode
+                               else np.r_[self.last_capture_timestamp, captures])
+            if (np.any(np.diff(source_sequence) < 0)
+                    or np.any(np.abs(captures - timestamps) > self.max_gap_s + 1e-6)):
                 raise ValueError("Invalid source timestamps for resampled history.")
         for frame in frames:
-            if not isinstance(frame, np.ndarray) or frame.dtype != np.uint8 or frame.shape != (224, 224, 3):
+            if (not isinstance(frame, np.ndarray) or frame.dtype != np.uint8
+                    or frame.shape != (224, 224, 3)):
                 raise ValueError("History frames must be uint8 RGB [224,224,3].")
         if current_image is not None and not np.array_equal(frames[-1], current_image):
             raise ValueError("Current top image must match the history cutoff frame.")
@@ -347,7 +389,7 @@ class MemoryBridge:
                 raise RuntimeError("Policy did not acknowledge episode reset.")
         if use_history:
             reply = policy.infer({
-                "add_buffer": True, "history_frames": frames,
+                "add_buffer": True, "history_frames": frames, "history_wire_camera": wire_camera,
                 "step_indices": indices, "prompt": task,
             })
             if reply.get("add_buffer_finished") is not True:
@@ -382,20 +424,24 @@ def parse_args(argv=None):
                              help="maximum allowed host observation interval, seconds")
     robot.add_argument("--history-max-pending", type=int, default=512)
     robot.add_argument("--history-batch-frames", type=int, default=32,
-                       help="frames per lossless upload; each batch is acknowledged before action inference")
+                       help="frames per lossless upload; "
+                            "each batch is acknowledged before action inference")
     robot.add_argument("--memory-home-mode", choices=("reset", "continue"), default="reset",
                        help="reset: Home ends the trial; continue: preserve history through Home")
     args = parser.parse_args(argv)
     if (not np.isfinite(args.history_fps) or args.history_fps <= 0
-            or not np.isfinite(args.history_max_gap) or args.history_max_gap < 1 / args.history_fps):
+            or not np.isfinite(args.history_max_gap)
+            or args.history_max_gap < 1 / args.history_fps):
         parser.error("history FPS must be positive and max gap >= one frame period")
     if args.actions_per_response <= 0:
         parser.error("actions-per-response must be positive")
     if args.mode == "robot-server":
         if not 1 <= args.history_batch_frames <= MAX_HISTORY_CHUNK:
             parser.error(f"history-batch-frames must be between 1 and {MAX_HISTORY_CHUNK}")
-        if args.image_size != 224 or args.camera_fps < args.history_fps or args.history_max_pending < 1:
-            parser.error("Memory needs image-size=224, camera-fps >= history-fps and positive queue capacity")
+        if (args.image_size != 224 or args.camera_fps < args.history_fps
+                or args.history_max_pending < 1):
+            parser.error("Memory needs image-size=224, camera-fps >= history-fps "
+                         "and positive queue capacity")
         # --close is an optional base-script feature, separate from Memory's
         # required transport hooks checked above.
         args.close = getattr(args, "close", None)

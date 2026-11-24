@@ -1,5 +1,7 @@
 """Reusable dataset-format and numerical preprocessing utilities."""
 
+from __future__ import annotations
+
 from dobot_nexus.data.statistics import NormStats, load_norm_stats, save_norm_stats
 from dobot_nexus.data.transforms import (
     ActionTransform,
@@ -7,6 +9,7 @@ from dobot_nexus.data.transforms import (
     invert_action_transform,
     normalize,
     unnormalize,
+    validate_norm_stats,
 )
 
 __all__ = [
@@ -18,4 +21,5 @@ __all__ = [
     "normalize",
     "save_norm_stats",
     "unnormalize",
+    "validate_norm_stats",
 ]

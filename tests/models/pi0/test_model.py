@@ -22,6 +22,7 @@ from dobot_nexus.models.pi0.data import Pi0Pipeline
 from dobot_nexus.models.pi0.modeling_pi0 import Pi0Model
 from dobot_nexus.models.pi0.training.checkpoint import normalize_state_dict
 from dobot_nexus.models.pi0.training.source import load_core_source
+from dobot_nexus.training import BCTrainer
 from dobot_nexus.training.runtime import LocalRuntime
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -572,6 +573,61 @@ class Pi0DirectCoreTest(unittest.TestCase):
         )
         self.assertEqual(set(state), {"weight"})
         self.assertFalse(module.save_nexus_weights())
+
+    def test_legacy_bc_token_limit_is_restored_for_inference_and_checked_on_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_fake_core(root)
+            weights, stats, tokenizer = root / "base.pt", root / "stats.json", root / "tokenizer"
+            torch.save({"weight": torch.tensor(1.0)}, weights)
+            stats.write_text(json.dumps(dict.fromkeys(
+                ("state", "actions"), {"mean": [0, 0], "std": [1, 1]}
+            )))
+            tokenizer.write_bytes(b"test tokenizer")
+            train = _model_config(root, weights, stats, tokenizer)
+            train.schema_version = 1
+            train.exp = Config(name="legacy", output_dir=str(root))
+            train.train.max_steps = 1
+
+            # Reproduce the old loader: the model used 48, but 12 was saved and fingerprinted.
+            model = Pi0Model(train, mode="train")
+            train.model.max_token_len = 12
+            artifact = ArtifactManager(root / "legacy").save(
+                model=model, runtime=LocalRuntime(train),
+                optimizer=torch.optim.AdamW(model.parameters()), scheduler=None,
+                config=train, step=1, metrics={},
+            )
+            self.assertEqual(load_manifest(artifact)["model"]["max_token_len"], 48)
+            self.assertEqual(load_config(artifact / "config_resolved.yaml").model.max_token_len, 12)
+            infer = _wrap({
+                "schema_version": 1,
+                "task": "infer",
+                "model": {
+                    "target": train.model.target, "artifact": str(artifact), "precision": "fp32",
+                },
+                "runtime": {"device": "cpu"},
+            })
+            for override in (None, 48):
+                with self.subTest(override=override):
+                    if override is not None:
+                        infer.model.max_token_len = override
+                    policy = InferencePolicy(infer)
+                    self.assertEqual(policy.model.adapter.pipeline.tokenizer.max_length, 48)
+            infer.model.max_token_len = 12
+            with self.assertRaisesRegex(ValueError, "Cannot override trained model.max_token_len"):
+                InferencePolicy(infer)
+
+            for selector in (str(artifact), "auto"):
+                train.train.resume_from = selector
+                with (
+                    self.subTest(resume_from=selector),
+                    mock.patch("dobot_nexus.models.pi0.modeling_pi0.load_core_source") as load_core,
+                    self.assertRaisesRegex(
+                        ValueError, r"max_token_len .*checkpoint=48, configured=12"
+                    ),
+                ):
+                    BCTrainer(train, runtime=LocalRuntime(train)).run()
+                load_core.assert_not_called()
 
     def test_artifact_restores_weights_stats_and_tokenizer_for_inference(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

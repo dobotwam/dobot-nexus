@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import sys
 import threading
+from collections import OrderedDict
+from dataclasses import fields, is_dataclass, replace
+from types import MappingProxyType
 
 import numpy as np
 
@@ -8,6 +12,68 @@ from dobot_nexus.core.artifacts import artifact_weight_path, load_manifest, reso
 from dobot_nexus.core.config import clone_config, load_config
 from dobot_nexus.core.contracts import ObservationBatch, PolicyOutput, SamplingOptions
 from dobot_nexus.core.import_utils import build_model
+
+_ALLOWED_NUMPY_SCALARS = frozenset(
+    np.dtype(code).type for code in np.typecodes["AllInteger"] + np.typecodes["AllFloat"] + "?US"
+)
+
+
+def _snapshot_aux(aux):
+    """Snapshot the public metadata types while the model lock is held."""
+    memo, cuda_devices = {}, set()
+    torch = sys.modules.get("torch")
+
+    def snapshot(value):
+        kind = type(value)
+        if value is None or kind in (bool, int, float, complex, str, bytes):
+            return value
+        numpy_scalar = kind in _ALLOWED_NUMPY_SCALARS
+        if (numpy_scalar or kind in (np.ndarray, np.void)) and value.dtype.metadata is not None:
+            raise TypeError("PolicyOutput.aux does not support NumPy dtype metadata.")
+        if numpy_scalar:
+            return value
+        key = id(value)
+        if key in memo:
+            return memo[key]
+        if kind is bytearray:
+            result = bytearray(value)
+        elif kind is np.ndarray:
+            if value.dtype.hasobject or value.dtype.names is not None:
+                raise TypeError("PolicyOutput.aux only supports plain non-object NumPy arrays.")
+            result = value.copy(order="K")
+            result.setflags(write=value.flags.writeable)
+        elif torch is not None and isinstance(value, torch.Tensor):
+            if getattr(value, "is_quantized", False):
+                raise TypeError("PolicyOutput.aux does not support quantized Torch tensors.")
+            if value.is_cuda:
+                cuda_devices.add(value.device)
+            result = value.detach().clone()
+        elif kind in (dict, OrderedDict, MappingProxyType):
+            backing = OrderedDict() if kind is OrderedDict else {}
+            memo[key] = MappingProxyType(backing) if kind is MappingProxyType else backing
+            backing.update((snapshot(k), snapshot(v)) for k, v in value.items())
+            return memo[key]
+        elif is_dataclass(value) and not isinstance(value, type):
+            # Memoize before walking fields to support cycles without invoking user constructors.
+            memo[key] = result = object.__new__(kind)
+            for field in fields(value):
+                object.__setattr__(result, field.name, snapshot(getattr(value, field.name)))
+        elif kind is list:
+            memo[key] = result = []
+            result.extend(snapshot(v) for v in value)
+        elif kind in (tuple, set, frozenset):
+            result = kind(snapshot(v) for v in value)
+        else:
+            raise TypeError(f"Unsupported PolicyOutput.aux value type: {kind.__name__}")
+        # A tuple reached again through a mutable child may already have been built.
+        return memo.setdefault(key, result)
+
+    try:
+        return snapshot(aux)
+    finally:
+        memo.clear()  # Release array and tensor references held by the recursive closure.
+        for device in cuda_devices:
+            torch.cuda.current_stream(device).synchronize()
 
 
 def _set_config_path(config, path: str, value) -> None:
@@ -30,13 +96,15 @@ class InferencePolicy:
         artifact = self.config.model.get("artifact")
         if artifact:
             self.artifact_dir = resolve_artifact(str(artifact))
+            self.config.model.artifact = str(self.artifact_dir)
             self.manifest = load_manifest(self.artifact_dir)
             training_config = load_config(
                 self.artifact_dir / "config_resolved.yaml", expected_task="train"
             )
             manifest_model = self.manifest.get("model", {})
-            if manifest_model.get("target"):
-                self.config.model.target = str(manifest_model["target"])
+            if manifest_model.get("target") != training_config.model.target:
+                raise ValueError("Artifact model.target disagrees with its saved configuration.")
+            self.config.model.target = training_config.model.target
             for key in ("state_dim", "action_dim", "action_horizon"):
                 configured = self.config.model.get(key)
                 trained = training_config.model[key]
@@ -143,6 +211,14 @@ class InferencePolicy:
         )
         with self._lock:
             output = self.model.predict_action_chunk(canonical, resolved_options)
+            # The backend may overwrite any of these fields on the next call.
+            output = replace(
+                output,
+                actions=output.actions.copy(),
+                valid_mask=None if output.valid_mask is None else output.valid_mask.copy(),
+                timing=output.timing.copy(),
+                aux=_snapshot_aux(output.aux),
+            )
         expected = (canonical.batch_size, self.spec.action_horizon, self.spec.action_dim)
         if output.actions.shape != expected:
             raise ValueError(

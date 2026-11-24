@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +19,10 @@ from dobot_nexus.data import (
     load_norm_stats,
     normalize,
     unnormalize,
+    validate_norm_stats,
 )
+from dobot_nexus.data.images import convert_image as _convert_image
+from dobot_nexus.data.images import resize_with_pad as _resize_with_pad
 from dobot_nexus.data.lerobot import (
     LeRobotNormStatsSpec,
     resolve_or_compute_lerobot_norm_stats,
@@ -54,6 +57,7 @@ class ResolvedDataConfig:
 class EncodedObservation:
     observation: Any
     raw_state: np.ndarray
+    model_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 def _as_numpy(value: Any) -> np.ndarray:
@@ -154,40 +158,8 @@ def _pad_last_dim(value: np.ndarray, target: int) -> np.ndarray:
     return np.pad(value, widths)
 
 
-def _convert_image(value: Any) -> np.ndarray:
-    image = _as_numpy(value)
-    if image.ndim != 3:
-        raise ValueError(f"Pi0 image must be 3-D, got {image.shape}.")
-    if image.shape[0] == 3 and image.shape[-1] != 3:
-        image = np.transpose(image, (1, 2, 0))
-    if image.shape[-1] != 3:
-        raise ValueError(f"Pi0 image must be RGB, got {image.shape}.")
-    if np.issubdtype(image.dtype, np.floating):
-        maximum = float(np.nanmax(image)) if image.size else 0.0
-        scale = 255.0 if maximum <= 1.0 else 1.0
-        image = np.clip(image * scale, 0.0, 255.0).astype(np.uint8)
-    elif image.dtype != np.uint8:
-        image = np.clip(image, 0, 255).astype(np.uint8)
-    return np.ascontiguousarray(image)
-
-
-def _resize_with_pad(image: np.ndarray, size: int = 224) -> np.ndarray:
-    if image.shape[:2] == (size, size):
-        return image
-    try:
-        from PIL import Image
-    except ImportError as exc:
-        raise ImportError("Pi0 image preprocessing requires Pillow.") from exc
-    source = Image.fromarray(image)
-    width, height = source.size
-    ratio = max(width / size, height / size)
-    resized_width = max(1, int(width / ratio))
-    resized_height = max(1, int(height / ratio))
-    resampling = getattr(Image, "Resampling", Image).BILINEAR
-    resized = source.resize((resized_width, resized_height), resample=resampling)
-    padded = Image.new("RGB", (size, size), 0)
-    padded.paste(resized, ((size - resized_width) // 2, (size - resized_height) // 2))
-    return np.asarray(padded, dtype=np.uint8)
+def normalize_prompt(prompt: str) -> str:
+    return prompt.strip().replace("_", " ").replace("\n", " ")
 
 
 class _Tokenizer:
@@ -207,13 +179,18 @@ class _Tokenizer:
             )
         return self._processor
 
-    def encode(self, prompt: str) -> tuple[np.ndarray, np.ndarray]:
+    def encode(self, prompt: str, *, strict: bool = False) -> tuple[np.ndarray, np.ndarray]:
         """Encode the original Pi0 text prefix without discretizing robot state."""
-        cleaned = prompt.strip().replace("_", " ").replace("\n", " ")
+        cleaned = normalize_prompt(prompt)
         processor = self._get_processor()
         tokens = list(processor.encode(cleaned, add_bos=True))
         tokens.extend(processor.encode("\n"))
         if len(tokens) > self.max_length:
+            if strict:
+                raise ValueError(
+                    f"Pi0 prompt has {len(tokens)} tokens, "
+                    f"exceeding max_token_len={self.max_length}."
+                )
             LOGGER.warning(
                 "Pi0 prompt has %d tokens; truncating to %d.", len(tokens), self.max_length
             )
@@ -310,9 +287,7 @@ class Pi0Pipeline:
             ("state", self.model_config.state_dim),
             ("actions", self.model_config.action_dim),
         ):
-            stats = self.stats[name]
-            if stats.mean.shape[-1] < dimension or stats.std.shape[-1] < dimension:
-                raise ValueError(f"{name} norm stats do not cover dimension {dimension}.")
+            validate_norm_stats(self.stats[name], dimension, name=name)
         if str(self.root_config.get("task", "")).lower() == "train":
             self.root_config.setdefault("data", {})["norm_stats_path"] = str(
                 self.norm_stats_path
@@ -339,6 +314,12 @@ class Pi0Pipeline:
             raise ValueError("Pi0 prompt must be non-empty.")
         return prompt
 
+    def tokenize_prompt(self, prompt: str, *, strict: bool = False):
+        return self.tokenizer.encode(prompt, strict=strict)
+
+    def collate_items(self, items):
+        return collate_items(items)
+
     def transform_frame(self, frame: Mapping[str, Any]) -> dict[str, Any]:
         required = [*self.image_fields.values(), self.state_key, self.action_key]
         missing = [key for key in required if key not in frame]
@@ -360,7 +341,7 @@ class Pi0Pipeline:
         stats = self._resolved_stats()
         normalized_state = normalize(state, stats["state"])
         normalized_actions = normalize(actions, stats["actions"])
-        tokens, token_mask = self.tokenizer.encode(self._prompt(frame))
+        tokens, token_mask = self.tokenize_prompt(self._prompt(frame))
         return {
             "image": {
                 destination: _resize_with_pad(_convert_image(frame[source]))
@@ -380,7 +361,7 @@ class Pi0Pipeline:
         tokens: list[np.ndarray] = []
         token_masks: list[np.ndarray] = []
         for batch_index, prompt in enumerate(observation.prompt):
-            token, token_mask = self.tokenizer.encode(prompt)
+            token, token_mask = self.tokenize_prompt(prompt)
             tokens.append(token)
             token_masks.append(token_mask)
             for public_name, core_name in self.model_config.camera_mapping.items():
@@ -479,7 +460,7 @@ class Pi0Pipeline:
             shuffle=True,
             num_workers=int(data.get("num_workers", 0)),
             persistent_workers=int(data.get("num_workers", 0)) > 0,
-            collate_fn=collate_items,
+            collate_fn=self.collate_items,
             drop_last=True,
             pin_memory=True,
             generator=generator,

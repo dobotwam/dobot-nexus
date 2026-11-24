@@ -63,7 +63,9 @@ class PolicySession:
         canonical = ObservationBatch.from_value(observation)
         identity = (tuple(canonical.env_ids or []), tuple(canonical.prompt))
         if self._identity is not None and identity != self._identity:
-            raise ValueError("PolicySession env_ids or prompt changed; reset before changing tasks.")
+            raise ValueError(
+                "PolicySession env_ids or prompt changed; reset before changing tasks."
+            )
         self._identity = identity
         if self._batch_size is not None and canonical.batch_size != self._batch_size:
             raise ValueError(
@@ -75,11 +77,14 @@ class PolicySession:
                 canonical,
                 SamplingOptions(seed=self._seed, num_steps=self.options.num_steps),
             )
-            self._buffer = output.actions[:, : self.options.execute_steps]
+            # A policy may reuse its output storage on its very next prediction.
+            # Staged sessions can safely share this immutable, session-owned chunk.
+            self._buffer = output.actions[:, : self.options.execute_steps].copy()
+            self._buffer.setflags(write=False)
             self._cursor = 0
             self._batch_size = canonical.batch_size
         assert self._buffer is not None
         action = self._buffer[:, self._cursor]
         self._cursor += 1
-        return np.ascontiguousarray(action, dtype=np.float32)
+        return np.array(action, dtype=np.float32, order="C", copy=True)
 
