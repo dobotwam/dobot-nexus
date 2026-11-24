@@ -18,6 +18,28 @@ _CAMERA_ALIASES = {
 }
 
 
+def _positive_token_limit(value):
+    if type(value) is not int or value <= 0:
+        raise ValueError("model.max_token_len must be a positive integer.")
+    return value
+
+
+def restore_token_limit(model, saved_model, metadata):
+    """Restore the tokenizer boundary, including the original 48-token BC default."""
+    configured = saved_model.get("max_token_len", Pi0Config.max_token_len)
+    trained = _positive_token_limit(metadata.get("max_token_len", configured))
+    # Original Pi0 BC recorded its fixed 48-token limit even when the config requested another.
+    legacy_bc = (
+        metadata.get("target") == "dobot_nexus.models.pi0.modeling_pi0:Pi0Model"
+        and trained == Pi0Config.max_token_len
+    )
+    if not legacy_bc and _positive_token_limit(configured) != trained:
+        raise ValueError("Artifact max_token_len disagrees with its saved configuration.")
+    if _positive_token_limit(model.get("max_token_len", trained)) != trained:
+        raise ValueError("Cannot override trained model.max_token_len.")
+    model["max_token_len"] = trained
+
+
 def _torch_dtype(value: str, *, field: str) -> torch.dtype:
     normalized = value.lower()
     if normalized in {"bf16", "bfloat16", "bf16-mixed"}:
@@ -78,6 +100,7 @@ class Pi0Config:
         )
         result = cls(
             checkpoint=checkpoint,
+            max_token_len=model.get("max_token_len", cls.max_token_len),
             precision=compute_precision,
             parameter_precision=parameter_precision,
             autocast=resolve_autocast(config),
@@ -156,6 +179,7 @@ class Pi0Config:
     def validate(self) -> None:
         _ = self.torch_dtype
         _ = self.parameter_torch_dtype
+        _positive_token_limit(self.max_token_len)
         if self.state_dim <= 0 or self.action_dim <= 0 or self.action_horizon <= 0:
             raise ValueError("Pi0 state/action dimensions and horizon must be positive.")
         if self.model_action_dim < max(self.state_dim, self.action_dim):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,17 @@ BC_CONFIGS = {
 
 
 class UserExamplesTest(unittest.TestCase):
+    def test_documented_pi0_memory_infer_command(self):
+        template = INFER_CONFIGS / "pi0_memory.yaml"
+        command, = [shlex.split(line[2:]) for line in template.read_text().splitlines()
+                    if line.startswith("# python -m ")]
+        self.assertEqual(command[:3], ["python", "-m", "dobot_nexus.models.pi0.memory.infer"])
+        self.assertEqual(ROOT / command[command.index("--config") + 1], template)
+        result = subprocess.run([sys.executable, *command[1:], "--help"], cwd=ROOT,
+                                capture_output=True, text=True, check=True, timeout=30)
+        for flag in ("--config", "--input", "--output"):
+            self.assertIn(flag, result.stdout)
+
     def test_launchers_keep_the_callers_python_after_changing_directory(self):
         with tempfile.TemporaryDirectory(prefix="nexus caller ") as directory:
             caller = Path(directory).resolve()
@@ -150,6 +162,8 @@ class UserExamplesTest(unittest.TestCase):
 
         expected_configs = {
             "pi0.yaml",
+            "pi0_recap.yaml",
+            "pi0_memory.yaml",
             "pi05.yaml",
             "pi05_recap.yaml",
             "pi05_memory.yaml",
@@ -177,15 +191,13 @@ class UserExamplesTest(unittest.TestCase):
             self.assertTrue(config.runtime.fsdp.enabled)
         self.assertEqual(
             {path.name for path in INFER_CONFIGS.glob("*.yaml")},
-            {
-                "pi0.yaml",
-                "pi05.yaml",
-                "pi05_recap.yaml",
-                "pi05_memory.yaml",
-            },
+            expected_configs,
         )
         for path in INFER_CONFIGS.glob("*.yaml"):
-            self.assertEqual(load_config(path, expected_task="infer").task, "infer")
+            config = load_config(path, expected_task="infer")
+            self.assertEqual(config.task, "infer")
+            if path.name in {"pi0_recap.yaml", "pi0_memory.yaml"}:
+                self.assertEqual(config.server.host, "127.0.0.1")
 
         self.assertEqual(list(EXAMPLES.rglob("norm_stats.json")), [])
 

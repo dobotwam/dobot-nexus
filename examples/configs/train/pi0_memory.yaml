@@ -1,0 +1,19 @@
+# Generic Torch Memory training using a fixed vision.npz and dense history features.
+# Prepare features with: python -m dobot_nexus.models.pi0.memory.prepare --config THIS_FILE
+# Use a new dataset identity and feature directory when rebuilding history assets.
+extends: pi0.yaml
+exp:
+  name: pi0_memory
+model:
+  target: dobot_nexus.models.pi0.memory.modeling_memory:Pi0MemoryModel
+  memory_initialization: base
+  memory:
+    budget: 512
+    window_frames: null
+    max_frames: 8192
+    camera: base
+    vision_checkpoint: ${env:MEMORY_VISION_CHECKPOINT,/path/to/frozen_vision.npz}
+data:
+  memory_features: ${env:MEMORY_FEATURES,/path/to/memory_features}
+  memory_dataset_id: ${env:MEMORY_DATASET_ID,dataset-immutable-version}
+  memory_cache_episodes: 8

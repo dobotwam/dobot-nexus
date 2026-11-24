@@ -35,6 +35,7 @@ import sys
 for name in ('dobot_nexus.algorithms.recap.value.training',
              'dobot_nexus.algorithms.recap.value.distributed', 'transformers', 'ray', 'rlinf'):
     sys.modules[name] = None
+from dobot_nexus.models.pi0.modeling_recap import Pi0ReCapModel
 from dobot_nexus.models.pi05.modeling_recap import Pi05ReCapModel
 from dobot_nexus.models.pi05.recap.modeling_recap import Pi05ReCapModel as saved_target
 assert saved_target is Pi05ReCapModel

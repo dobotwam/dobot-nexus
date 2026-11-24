@@ -1,0 +1,14 @@
+# Run one action chunk from an ordinary observation using the bundled vision encoder:
+# python -m dobot_nexus.models.pi0.memory.infer --config examples/configs/infer/pi0_memory.yaml --input observation.npz --output actions.npz
+# For successive requests, retain the session returned by memory.infer.open_memory_session(config).
+extends: pi0.yaml
+exp:
+  name: pi0_memory_infer
+model:
+  target: dobot_nexus.models.pi0.memory.modeling_memory:Pi0MemoryModel
+  artifact: ${env:MEMORY_ARTIFACT,runs/pi0_memory/checkpoints/latest_deployment.txt}
+  state_dim: null
+  action_dim: null
+  action_horizon: null
+inference:
+  execute_steps: 8

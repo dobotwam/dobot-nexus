@@ -202,6 +202,7 @@ class Attention(nn.Module):
 
     def __init__(self, configs: Sequence[Config]):
         super().__init__()
+        self.rope = _apply_rope
         self.expert_configs = configs
         self.num_heads = configs[0].num_heads
         self.num_kv_heads = configs[0].num_kv_heads
@@ -320,8 +321,8 @@ class Attention(nn.Module):
         v = torch.cat([v for v in v_parts if v is not None], dim=1)
 
         # Apply RoPE
-        q = _apply_rope(q, positions=positions)
-        k = _apply_rope(k, positions=positions)
+        q = self.rope(q, positions=positions)
+        k = self.rope(k, positions=positions)
 
         # KV cache: concatenate along sequence dim
         if kv_cache is not None:
@@ -428,6 +429,7 @@ class Block(nn.Module):
         self.adarms = list(adarms)
 
         self.attn = Attention(configs)
+        self.memory_modulation = None
         self.pre_attention_norms = nn.ModuleList(
             [RMSNorm(c.width, adaptive=adarms[i]) for i, c in enumerate(configs)]
         )
@@ -453,6 +455,9 @@ class Block(nn.Module):
         positions: torch.Tensor,
         attn_mask: torch.Tensor,
         adarms_cond: list[torch.Tensor | None],
+        memory_tokens=None,
+        memory_mask=None,
+        memory_kv=None,
     ) -> tuple[list[torch.Tensor | None], tuple[torch.Tensor, torch.Tensor]]:
         """Forward pass.
 
@@ -493,6 +498,10 @@ class Block(nn.Module):
         gates = []
         for i, (x, config) in enumerate(zip(xs, self.configs, strict=True)):
             if x is not None:
+                if i == len(xs) - 1 and self.memory_modulation is not None:
+                    if memory_tokens is None or memory_mask is None:
+                        raise ValueError("The Pi0 action expert requires memory tokens and a mask.")
+                    x = self.memory_modulation(x, memory_tokens, memory_mask, cached_kv=memory_kv)
                 x_norm, gate = self.pre_ffw_norms[i](x, adarms_cond[i])
                 x_ffn = self.mlps[i](x_norm)
                 out.append(x_ffn)
@@ -562,6 +571,9 @@ class Module(nn.Module):
         adarms_cond: Sequence[torch.Tensor | None] | None = None,
         *,
         kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
+        memory_tokens=None,
+        memory_mask=None,
+        memory_kv=None,
     ) -> tuple[list[torch.Tensor | None], tuple[torch.Tensor, torch.Tensor]]:
         """Full transformer forward pass.
 
@@ -580,6 +592,9 @@ class Module(nn.Module):
 
         # Expand mask: (B, T, S) -> (B, 1, T, S)
         mask = mask.unsqueeze(1)
+
+        if memory_kv is not None and self.training:
+            raise RuntimeError("Memory KV caching requires eval mode.")
 
         xs = list(embedded)
 
@@ -602,18 +617,16 @@ class Module(nn.Module):
         new_layer_kv_caches = []
         for i, layer in enumerate(self.layers):
             layer_kv = layer_kv_caches[i] if i < len(layer_kv_caches) else None
+            layer_args = (xs, layer_kv, positions, mask, adarms_cond, memory_tokens, memory_mask,
+                          memory_kv[i] if memory_kv is not None else None)
             if self.gradient_checkpointing and self.training:
                 xs, new_kv = torch.utils.checkpoint.checkpoint(
                     layer,
-                    xs,
-                    layer_kv,
-                    positions,
-                    mask,
-                    adarms_cond,
+                    *layer_args,
                     use_reentrant=self.gradient_checkpointing_use_reentrant,
                 )
             else:
-                xs, new_kv = layer(xs, layer_kv, positions, mask, adarms_cond)
+                xs, new_kv = layer(*layer_args)
             new_layer_kv_caches.append(new_kv)
 
         # Return the list of per-layer KV caches

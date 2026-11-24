@@ -44,6 +44,8 @@ def resize_with_pad_torch(
     height: int,
     width: int,
     mode: str = "bilinear",
+    *,
+    antialias: bool = False,
 ) -> torch.Tensor:
     """Resize images to target size with padding to preserve aspect ratio.
 
@@ -71,7 +73,7 @@ def resize_with_pad_torch(
     resized_w = int(cur_w / ratio)
 
     resized = tF.interpolate(
-        images, size=(resized_h, resized_w), mode=mode, align_corners=False
+        images, size=(resized_h, resized_w), mode=mode, align_corners=False, antialias=antialias
     )
 
     if images.dtype == torch.uint8:

@@ -1,0 +1,15 @@
+# Generic RECAP policy training. Supply BC statistics and advantage annotations.
+extends: pi0.yaml
+exp:
+  name: pi0_recap
+model:
+  target: dobot_nexus.models.pi0.modeling_recap:Pi0ReCapModel
+  recap:
+    schema_version: 2
+    recipe: dobot_acp_v1
+    unconditional_prob: 0.3
+data:
+  format_version: v2.1
+  norm_stats_path: ${env:RECAP_BC_NORM_STATS,/path/to/bc/deployment/assets/norm_stats.json}
+  recap:
+    annotations: ${env:RECAP_ANNOTATIONS,/path/to/recap_annotations}

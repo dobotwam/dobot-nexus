@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +54,7 @@ class ResolvedDataConfig:
 class EncodedObservation:
     observation: Any
     raw_state: np.ndarray
+    model_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 def _as_numpy(value: Any) -> np.ndarray:
@@ -190,6 +191,10 @@ def _resize_with_pad(image: np.ndarray, size: int = 224) -> np.ndarray:
     return np.asarray(padded, dtype=np.uint8)
 
 
+def normalize_prompt(prompt: str) -> str:
+    return prompt.strip().replace("_", " ").replace("\n", " ")
+
+
 class _Tokenizer:
     def __init__(self, path: Path, max_length: int) -> None:
         self.path = path
@@ -207,13 +212,17 @@ class _Tokenizer:
             )
         return self._processor
 
-    def encode(self, prompt: str) -> tuple[np.ndarray, np.ndarray]:
+    def encode(self, prompt: str, *, strict: bool = False) -> tuple[np.ndarray, np.ndarray]:
         """Encode the original Pi0 text prefix without discretizing robot state."""
-        cleaned = prompt.strip().replace("_", " ").replace("\n", " ")
+        cleaned = normalize_prompt(prompt)
         processor = self._get_processor()
         tokens = list(processor.encode(cleaned, add_bos=True))
         tokens.extend(processor.encode("\n"))
         if len(tokens) > self.max_length:
+            if strict:
+                raise ValueError(
+                    f"Pi0 prompt has {len(tokens)} tokens, exceeding max_token_len={self.max_length}."
+                )
             LOGGER.warning(
                 "Pi0 prompt has %d tokens; truncating to %d.", len(tokens), self.max_length
             )
@@ -339,6 +348,12 @@ class Pi0Pipeline:
             raise ValueError("Pi0 prompt must be non-empty.")
         return prompt
 
+    def tokenize_prompt(self, prompt: str, *, strict: bool = False):
+        return self.tokenizer.encode(prompt, strict=strict)
+
+    def collate_items(self, items):
+        return collate_items(items)
+
     def transform_frame(self, frame: Mapping[str, Any]) -> dict[str, Any]:
         required = [*self.image_fields.values(), self.state_key, self.action_key]
         missing = [key for key in required if key not in frame]
@@ -360,7 +375,7 @@ class Pi0Pipeline:
         stats = self._resolved_stats()
         normalized_state = normalize(state, stats["state"])
         normalized_actions = normalize(actions, stats["actions"])
-        tokens, token_mask = self.tokenizer.encode(self._prompt(frame))
+        tokens, token_mask = self.tokenize_prompt(self._prompt(frame))
         return {
             "image": {
                 destination: _resize_with_pad(_convert_image(frame[source]))
@@ -380,7 +395,7 @@ class Pi0Pipeline:
         tokens: list[np.ndarray] = []
         token_masks: list[np.ndarray] = []
         for batch_index, prompt in enumerate(observation.prompt):
-            token, token_mask = self.tokenizer.encode(prompt)
+            token, token_mask = self.tokenize_prompt(prompt)
             tokens.append(token)
             token_masks.append(token_mask)
             for public_name, core_name in self.model_config.camera_mapping.items():
@@ -479,7 +494,7 @@ class Pi0Pipeline:
             shuffle=True,
             num_workers=int(data.get("num_workers", 0)),
             persistent_workers=int(data.get("num_workers", 0)) > 0,
-            collate_fn=collate_items,
+            collate_fn=self.collate_items,
             drop_last=True,
             pin_memory=True,
             generator=generator,

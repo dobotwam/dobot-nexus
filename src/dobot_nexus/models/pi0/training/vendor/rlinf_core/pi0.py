@@ -90,6 +90,7 @@ class Pi0(model.BaseModel):
         self.pcd = config.pcd
         self.embed_dtype = _str_to_dtype(config.dtype)
         self._config = config
+        self.memory_encoder = None
 
         paligemma_config = gemma.get_config(config.paligemma_variant)
         action_expert_config = gemma.get_config(config.action_expert_variant)
@@ -315,6 +316,16 @@ class Pi0(model.BaseModel):
 
         return tokens, input_mask, ar_mask, adarms_cond
 
+    def _encode_memory(self, memory_inputs):
+        if self.memory_encoder is None:
+            if memory_inputs is not None:
+                raise ValueError("Memory inputs require a configured memory encoder.")
+            return {}
+        if memory_inputs is None:
+            raise ValueError("This Pi0 model requires explicit history inputs.")
+        features, positions, mask = memory_inputs
+        return {"memory_tokens": self.memory_encoder(features, positions), "memory_mask": mask}
+
     def compute_loss(
         self,
         observation: model.Observation,
@@ -324,6 +335,7 @@ class Pi0(model.BaseModel):
         rng: torch.Generator | None = None,
         noise: torch.Tensor | None = None,
         time: torch.Tensor | None = None,
+        memory_inputs=None,
     ) -> torch.Tensor:
         """Compute flow matching loss.
 
@@ -380,6 +392,7 @@ class Pi0(model.BaseModel):
             positions=positions,
             mask=attn_mask,
             adarms_cond=[None, adarms_cond],
+            **self._encode_memory(memory_inputs),
         )[0]
 
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
@@ -418,6 +431,7 @@ class Pi0(model.BaseModel):
         t_tensor: torch.Tensor,
         kv_cache: tuple,
         prefix_mask: torch.Tensor,
+        **memory_kwargs,
     ) -> torch.Tensor:
         """One suffix forward pass (action expert) given the prefix KV cache.
 
@@ -442,6 +456,7 @@ class Pi0(model.BaseModel):
             mask=full_attn_mask,
             kv_cache=kv_cache,
             adarms_cond=[None, adarms_cond],
+            **memory_kwargs,
         )
         return outputs[1][:, -self.action_horizon :]
 
@@ -456,6 +471,8 @@ class Pi0(model.BaseModel):
         num_steps: int = 10,
         noise: torch.Tensor | None = None,
         rng: torch.Generator | None = None,
+        memory_inputs=None,
+        _cache_memory: bool = False,
     ) -> torch.Tensor:
         """Sample actions using Euler ODE solver.
 
@@ -468,7 +485,15 @@ class Pi0(model.BaseModel):
         Returns:
             actions: (B, action_horizon, action_dim)
         """
+        if _cache_memory and self.training:
+            raise RuntimeError("Memory KV caching requires eval mode.")
         observation = model.preprocess_observation(observation, train=False)
+        memory_kwargs = self._encode_memory(memory_inputs)
+        if _cache_memory and memory_kwargs:
+            memory_kwargs["memory_kv"] = tuple(
+                layer.memory_modulation.attention.prepare_memory(memory_kwargs["memory_tokens"])
+                for layer in self.llm.layers
+            )
 
         dt = -1.0 / num_steps
         B = observation.state.shape[0]
@@ -488,7 +513,7 @@ class Pi0(model.BaseModel):
         while t >= -dt / 2:
             t_tensor = torch.full((B,), t, device=device, dtype=torch.float32)
             suffix_out_act = self.run_suffix(
-                observation, x_t, t_tensor, kv_cache, prefix_mask
+                observation, x_t, t_tensor, kv_cache, prefix_mask, **memory_kwargs
             )
             v_t = self.velocity_from_suffix(suffix_out_act)
             x_t = x_t + dt * v_t
@@ -505,10 +530,12 @@ class Pi0(model.BaseModel):
         rng: torch.Generator | None = None,
         noise: torch.Tensor | None = None,
         time: torch.Tensor | None = None,
+        memory_inputs=None,
     ) -> torch.Tensor:
         """Default forward computes loss."""
         return self.compute_loss(
-            observation, actions, train=train, rng=rng, noise=noise, time=time
+            observation, actions, train=train, rng=rng, noise=noise, time=time,
+            memory_inputs=memory_inputs,
         )
 
     def gradient_checkpointing_enable(
