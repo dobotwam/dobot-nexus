@@ -13,7 +13,13 @@ from dobot_nexus.core.contracts import TrainResult
 
 from .artifacts import feature_metadata
 from .batching import environment_batch_size
-from .configuration import HeadConfig, LearningConfig, recipe_identity, validate_recipe
+from .configuration import (
+    HeadConfig,
+    LearningConfig,
+    ResidualConfig,
+    recipe_identity,
+    validate_recipe,
+)
 from .identity import content_digest
 from .routing import PolicySwitch
 
@@ -46,8 +52,8 @@ def validate_training(config):
         raise ValueError("initialize_from starts a new run; resume_from restores an existing run.")
     if config.algorithm.get("initialize_from") and (learning.td3 is None or not config.algorithm.get("task_identity")):
         raise ValueError("Stage initialization requires the TD3 recipe and task_identity.")
-    if heads.residual is not None and len(heads.residual["rho"]) != config.model.action_dim:
-        raise ValueError("Residual rho must declare one scale per model action dimension.")
+    if heads.residual is not None:
+        ResidualConfig(**heads.residual).validate_scale(heads.chunk_size, config.model.action_dim)
     if learning.td3 is not None and not config.algorithm.get("task_identity"):
         raise ValueError("TD3 requires a versioned task_identity for reward semantics.")
     if type(config.algorithm.get("reference_num_steps", 10)) is not int or config.algorithm.get("reference_num_steps", 10) <= 0:

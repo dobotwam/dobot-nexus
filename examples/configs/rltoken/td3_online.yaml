@@ -1,0 +1,39 @@
+extends: stage2.yaml
+exp:
+  name: rltoken_td3_online
+algorithm:
+  recipe: rlt_td3_residual_v1
+  task_identity: sparse_terminal_success_v1
+  initialize_from: ${env:RLT_PREWARM,/path/to/prewarm.pt}
+  learning:
+    gamma: 0.99
+    critic_actor_ratio: 2
+    target_update_frequency: 1
+    actor_lr: 0.0001
+    critic_lr: 0.0001
+    batch_size: 512
+    td3:
+      bc_action_space: preclip
+      success_anchor: known_success_behavior
+      actor_update_action_noise: true
+      grad_clip: 10.0
+      weight_schedule:
+        enable: true
+        warmup_updates: 20000
+        ramp_updates: 50000
+        warmup_q_weight: 0.05
+        warmup_bc_weight: 7.0
+        online_q_weight: 0.5
+        online_bc_weight: 2.8
+model:
+  action_horizon: 6
+  rltoken:
+    chunk_size: 6
+    residual:
+      scale: 1.0
+      hidden_dims: [256, 256]
+      exploration_std: 0.1
+data:
+  replay:
+    sampling: uniform
+    capacity: 50000

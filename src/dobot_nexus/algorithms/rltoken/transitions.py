@@ -234,31 +234,16 @@ def residual_batch(rows, chunk_size, device):
     batch = training_batch(rows, chunk_size, device)
     reference = torch.cat([r.features.reference_actions[:, :chunk_size] for r in rows]).to(device)
     batch["reference_condition"] = reference
-    batch["valid"] = torch.cat([r.executed.executed_mask for r in rows]).to(device)
-    batch["supervision"] = torch.cat([
-        r.supervision if r.supervision is not None else r.executed.actions for r in rows
-    ]).to(device)
-    batch["supervision_mask"] = torch.cat([
-        r.supervision_mask if r.supervision_mask is not None else
-        (r.executed.executed_mask & (r.takeover[None] if r.origin != "demo"
-                                    else torch.ones_like(r.executed.executed_mask)))
-        for r in rows]).to(device)
-    batch["mc_return"] = torch.tensor([r.mc_return or 0.0 for r in rows], device=device)
-    batch["mc_valid"] = torch.tensor([r.mc_return is not None and r.mc_source == "vla"
-                                      for r in rows], dtype=torch.bool, device=device)
-    batch["success"] = torch.tensor([
-        r.episode_success if r.episode_success is not None else
-        (r.mc_return is not None and r.mc_return > 0) or (r.terminated and bool(r.rewards.sum() > 0))
-        for r in rows], device=device)
-    batch["failure"] = torch.tensor([
-        not r.episode_success if r.episode_success is not None else
-        r.mc_return == 0 or (r.terminated and bool(r.rewards.sum() == 0))
-        for r in rows], device=device)
-    batch["truncated"] = torch.tensor([r.truncated for r in rows], device=device)
-    batch["terminal_success"] = torch.tensor([
-        r.terminated and bool(r.rewards.sum() > 0) for r in rows], device=device)
-    batch["terminal_failure"] = torch.tensor([
-        r.terminated and bool(r.rewards.sum() == 0) for r in rows], device=device)
+    batch["valid_mask"] = torch.cat([r.executed.executed_mask for r in rows]).to(device)
+    batch["episode_success"] = torch.tensor(
+        [bool(r.episode_success) for r in rows], device=device, dtype=torch.bool
+    )
+    batch["episode_success_known"] = torch.tensor(
+        [r.episode_success is not None for r in rows], device=device, dtype=torch.bool
+    )
+    batch["terminated"] = ~batch["bootstrap"]
+    batch["truncated"] = torch.tensor([bool(r.truncated) for r in rows], device=device)
+    batch["intervene_flags"] = torch.stack([r.takeover for r in rows]).to(device)
     return batch
 
 

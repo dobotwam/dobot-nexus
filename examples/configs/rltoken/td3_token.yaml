@@ -1,6 +1,6 @@
 extends: stage1_pi05.yaml
 exp:
-  name: pi05_rltoken_bottleneck
+  name: pi05_rltoken_position_bottleneck
 algorithm:
   target: dobot_nexus.algorithms.rltoken.token_pretraining:TokenPretrainTrainer
   token:
@@ -17,15 +17,18 @@ model:
       input_dim: 2048
       width: 2048
       heads: 8
-      encoder_layers: 2
-      decoder_layers: 2
+      layers: 2
       max_tokens: 2048
       dropout: 0.1
-      mode: bottleneck
-      selection: image_only
+      mode: position_bottleneck
+      selection: full
+data:
+  norm_stats_path: ${env:RLT_NORM_STATS,/path/to/norm_stats.json}
 runtime:
   launcher: local
   device: cpu
+  fsdp:
+    enabled: false
 optim:
   lr: 0.0001
   weight_decay: 0.0

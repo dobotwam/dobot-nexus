@@ -100,18 +100,37 @@ class Replay:
         self.connection.commit()
         self.identity = identity
         self.rows = OrderedDict()
+        self.episode_outcomes: dict[tuple[str, ...], bool] = {}
         self.bytes = self.budget = self.watermark = self.admitted = self.online_admitted = 0
         self.status_counts = {"pending": 0, "admitted": 0, "rejected": 0}
         self.generator = torch.Generator().manual_seed(seed)
         self._replay_after(0)
 
-    def _apply(self, sequence, status, payload):
+    def _check_episode_outcome(self, row, status, reason) -> bool | None:
+        """Return the finalized label, including feedback from outside the training scope."""
+        if status != "admitted" and (status, reason) != ("rejected", "outside_training_scope"):
+            return None
+        if not row.execution_confirmed or not row.reward_finalized:
+            return None
+        if type(row.episode_success) is not bool:
+            return None
+        previous = self.episode_outcomes.get(row.observation_id.session)
+        if previous is not None and previous != row.episode_success:
+            raise ValueError(f"Conflicting episode outcome for {row.observation_id.session}.")
+        return row.episode_success
+
+    def _index_episode_outcome(self, row, status, reason):
+        outcome = self._check_episode_outcome(row, status, reason)
+        if outcome is not None:
+            self.episode_outcomes[row.observation_id.session] = outcome
+
+    def _apply(self, sequence, status, reason, row, size):
+        self._index_episode_outcome(row, status, reason)
         self.watermark = sequence
         self.status_counts[status] += 1
         if status == "admitted":
-            row = _load(payload)
-            self.rows[row.key] = (row, len(payload))
-            self.bytes += len(payload)
+            self.rows[row.key] = (row, size)
+            self.bytes += size
             self.admitted += 1
             if row.origin not in {"demo", "vla"}:
                 self.budget += self.utd
@@ -132,13 +151,17 @@ class Replay:
                 self.bytes -= size
 
     def _replay_after(self, watermark):
-        for sequence, status, payload, digest in self.connection.execute(
-            "SELECT sequence,status,payload,digest FROM events WHERE sequence>? ORDER BY sequence",
+        if watermark == 0:
+            self.episode_outcomes.clear()
+        for sequence, status, reason, payload, digest in self.connection.execute(
+            "SELECT sequence,status,reason,payload,digest FROM events "
+            "WHERE sequence>? ORDER BY sequence",
             (watermark,),
         ):
-            if content_digest(_load(payload)) != digest:
+            row = _load(payload)
+            if content_digest(row) != digest:
                 raise ValueError(f"Corrupt Replay journal event at sequence {sequence}.")
-            self._apply(sequence, status, payload)
+            self._apply(sequence, status, reason, row, len(payload))
 
     def pending(self):
         return [_load(row[0]) for row in self.connection.execute(
@@ -193,6 +216,7 @@ class Replay:
             self.spec, self.chunk_size, allow_terminal_chunks=self.allow_terminal_chunks,
             training_scope=self.training_scope,
         )
+        self._check_episode_outcome(row, status, reason)
         payload = _dump(row)
         if len(payload) > min(self.max_record_bytes, self.demo_max_bytes if self.sampling == "demo_joint_50" and self.is_demo(row) else self.max_bytes):
             raise ValueError("Transition exceeds Replay byte bounds.")
@@ -204,7 +228,7 @@ class Replay:
             sequence = cursor.lastrowid
             self.connection.execute("INSERT OR REPLACE INTO latest VALUES (?,?)", (key, sequence))
         # ACK is returned only after the durable transaction commits.
-        self._apply(sequence, status, payload)
+        self._apply(sequence, status, reason, row, len(payload))
         return DurableAck(row.key, status, reason, sequence, digest)
 
     @staticmethod
@@ -221,16 +245,24 @@ class Replay:
             pools = [(demo or joint, batch_size // 2), (joint or demo, batch_size - batch_size // 2)]
             selected = [pool[i][0].cpu_copy() for pool, count in pools for i in
                         torch.randint(len(pool), (count,), generator=self.generator).tolist()]
-            self.last_sample_demo_fraction = sum(self.is_demo(r) for r in selected) / batch_size
-            return selected
-        indices = torch.randint(len(rows), (batch_size,), generator=self.generator).tolist()
-        return [rows[index][0].cpu_copy() for index in indices]
+        else:
+            indices = torch.randint(len(rows), (batch_size,), generator=self.generator).tolist()
+            selected = [rows[index][0].cpu_copy() for index in indices]
+        self.last_sample_demo_fraction = sum(self.is_demo(row) for row in selected) / batch_size
+        return [
+            replace(row, episode_success=self.episode_outcomes[row.observation_id.session])
+            if row.episode_success is None and row.observation_id.session in self.episode_outcomes
+            else row
+            for row in selected
+        ]
 
     def state_dict(self):
         return copy.deepcopy(
             {
                 "identity": self.identity,
                 "rows": self.rows,
+                "episode_outcomes": self.episode_outcomes,
+                "episode_outcomes_version": 2,
                 "bytes": self.bytes,
                 "budget": self.budget,
                 "watermark": self.watermark,
@@ -255,6 +287,18 @@ class Replay:
         for name in ("rows", "bytes", "budget", "watermark", "admitted", "status_counts"):
             setattr(self, name, copy.deepcopy(state[name]))
         self.online_admitted = state.get("online_admitted", state["admitted"])
+        if state.get("episode_outcomes_version") == 2 and "episode_outcomes" in state:
+            self.episode_outcomes = dict(state["episode_outcomes"])
+        else:
+            # Older snapshots omitted outcomes from outside the training scope.
+            self.episode_outcomes.clear()
+            for status, reason, payload in self.connection.execute(
+                "SELECT status,reason,payload FROM events WHERE sequence<=? AND "
+                "(status='admitted' OR (status='rejected' AND reason='outside_training_scope')) "
+                "ORDER BY sequence",
+                (self.watermark,),
+            ):
+                self._index_episode_outcome(_load(payload), status, reason)
         self.generator.set_state(state["rng"])
         self._replay_after(self.watermark)
 

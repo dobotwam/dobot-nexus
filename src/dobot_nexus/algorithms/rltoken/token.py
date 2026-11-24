@@ -26,8 +26,10 @@ class TokenConfig:
         for name in ("input_dim", "width", "heads", "layers", "max_tokens"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"Token {name} must be a positive integer.")
-        if self.mode not in {"teacher_forcing", "bottleneck"} or self.selection not in {"full", "image_only"}:
-            raise ValueError("Invalid token mode/selection.")
+        if self.mode not in {"teacher_forcing", "bottleneck", "position_bottleneck"}:
+            raise ValueError(f"Unsupported token mode {self.mode!r}.")
+        if self.selection not in {"full", "image_only"}:
+            raise ValueError(f"Token selection must be full or image_only, got {self.selection!r}.")
         if self.mode == "bottleneck" and self.input_dim != self.width:
             raise ValueError("Dobot bottleneck requires input_dim == width.")
         for value in (self.encoder_layers, self.decoder_layers):
@@ -156,24 +158,29 @@ class BottleneckEncoder(nn.Module):
         return self.transformer(inputs, src_key_padding_mask=padding)[:, -1]
 
 
-class BottleneckDecoder(nn.Module):
+class PositionBottleneckDecoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.query = nn.Parameter(torch.randn(1, config.max_tokens, config.width) * .02)
-        self.position = nn.Parameter(torch.randn(1, config.max_tokens, config.width) * .02)
+        self._init_queries(config)
         layer = nn.TransformerEncoderLayer(config.width, config.heads, config.width * 4,
             config.dropout, activation="gelu", batch_first=True, norm_first=True)
         self.transformer = nn.TransformerEncoder(layer, config.decoder_layers or config.layers,
                                                  enable_nested_tensor=False)
         self.output = nn.Linear(config.width, config.input_dim)
 
+    def _init_queries(self, config):
+        self.position = nn.Parameter(torch.randn(1, config.max_tokens, config.width) * 0.02)
+
+    def _inputs(self, latent, length):
+        return latent[:, None].to(self.position.dtype) + self.position[:, :length]
+
     def forward(self, latent, prefix, valid):
         # prefix supplies shape only. Target values never enter decoder attention.
         length = valid.shape[1]
-        if prefix.shape[:2] != valid.shape or length > self.config.max_tokens:
+        if prefix.shape[:2] != valid.shape or not 0 < length <= self.config.max_tokens:
             raise ValueError("Invalid bottleneck reconstruction shape.")
-        inputs = latent[:, None] + self.query[:, :length] + self.position[:, :length]
+        inputs = self._inputs(latent, length)
         causal = torch.ones(length, length, device=valid.device, dtype=torch.bool).triu(1)
         # Image masks may start with absent cameras. Keep one query visible to avoid
         # all-masked causal rows; outputs at absent positions are excluded from loss.
@@ -183,7 +190,20 @@ class BottleneckDecoder(nn.Module):
         return self.output(hidden)
 
 
+class BottleneckDecoder(PositionBottleneckDecoder):
+    def _init_queries(self, config):
+        self.query = nn.Parameter(torch.randn(1, config.max_tokens, config.width) * 0.02)
+        super()._init_queries(config)
+
+    def _inputs(self, latent, length):
+        return latent[:, None] + self.query[:, :length] + self.position[:, :length]
+
+
 def build_token_modules(config):
+    if config.mode == "position_bottleneck":
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(config.seed + 1)
+            return TokenEncoder(config), PositionBottleneckDecoder(config)
     if config.mode == "bottleneck":
         with torch.random.fork_rng(devices=[]):
             torch.random.default_generator.manual_seed(config.seed)

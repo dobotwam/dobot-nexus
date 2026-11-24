@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import ast
 import logging
 import subprocess
@@ -77,6 +79,29 @@ class CoordinatorFixture:
 
 
 class TrainingTest(unittest.TestCase):
+    def test_all_templates_load_and_online_recipes_validate(self):
+        from dobot_nexus.algorithms.rltoken.pretraining import RLTokenPrewarmTrainer
+        from dobot_nexus.algorithms.rltoken.token import TokenConfig
+
+        for path in sorted((ROOT / "examples/configs/rltoken").glob("*.yaml")):
+            with self.subTest(path=path.name):
+                config = load_config(path)
+                if config.runtime.get("launcher") == "rlinf":
+                    validate_training(config)
+                elif path.stem == "td3_prewarm":
+                    RLTokenPrewarmTrainer(config, None)
+                elif path.stem == "td3_token":
+                    self.assertEqual(
+                        TokenConfig(**config.model.rltoken.token).mode, "position_bottleneck"
+                    )
+        config = load_config(ROOT / "examples/configs/rltoken/td3_online.yaml")
+        for scale in (1.0, [1.0] * 14, [1.0] * 84):
+            config.model.rltoken.residual.scale = scale
+            validate_training(config)
+        config.model.rltoken.residual.scale = [1.0, 2.0]
+        with self.assertRaisesRegex(ValueError, "scale"):
+            validate_training(config)
+
     def test_terminal_recipe_requires_an_explicit_known_name(self):
         from dobot_nexus.algorithms.rltoken.configuration import recipe_identity
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -62,6 +64,29 @@ class ConfirmingAgent:
 
 
 class EnvRolloutTest(unittest.TestCase):
+    def test_per_step_final_feedback_labels_earlier_chunks_at_sampling(self):
+        agent = ConfirmingAgent()
+        execute = agent.execute
+
+        def finish_second_chunk(*args, **kwargs):
+            feedback = execute(*args, **kwargs)
+            if agent.executions == 2:
+                return replace(feedback, terminated=True, episode_success=False)
+            return feedback
+
+        agent.execute = finish_second_chunk
+        session = self.session(agent)
+        session.collect_chunk(self.engine.process, self.replay.commit)
+        self.assertIsNone(self.replay.sample(1)[0].episode_success)
+        session.collect_chunk(self.engine.process, self.replay.commit)
+        first, last = (row for row, _ in self.replay.rows.values())
+        self.assertIsNone(first.episode_success)
+        self.assertIs(last.episode_success, False)
+        sample = self.replay.sample(16)
+        self.assertEqual({r.key for r in sample}, {first.key, last.key})
+        self.assertTrue(all(r.episode_success is False for r in sample))
+        self.assertEqual(self.replay.budget, 2)
+
     def test_episode_labels_are_finalized_after_durable_pending_ack(self):
         from dobot_nexus.algorithms.rltoken.transitions import Finalization
         agent = ConfirmingAgent()

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import unittest
 
 import torch
@@ -67,3 +69,46 @@ class TokenTest(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             TokenConfig(6, width=7, heads=2)
+
+    def test_bottleneck_does_not_read_teacher(self):
+        from dobot_nexus.algorithms.rltoken.token import TokenConfig, build_token_modules
+
+        config = TokenConfig(8, width=8, heads=2, max_tokens=4, mode="bottleneck", dropout=0)
+        encoder, decoder = build_token_modules(config)
+        encoder.eval()
+        decoder.eval()
+        prefix = torch.randn(2, 4, 8)
+        valid = torch.ones(2, 4, dtype=torch.bool)
+        latent = encoder(prefix, valid)
+        torch.testing.assert_close(
+            decoder(latent, prefix, valid), decoder(latent, prefix + 100, valid)
+        )
+        self.assertFalse(
+            torch.equal(decoder(latent, prefix, valid), decoder(latent * 0, prefix, valid))
+        )
+
+    def test_position_queries_depend_on_latent_and_ignore_teacher(self):
+        from dataclasses import replace
+
+        from dobot_nexus.algorithms.rltoken.token import (
+            PositionBottleneckDecoder,
+            build_token_modules,
+        )
+
+        prefix = torch.randn(2, 5, self.config.input_dim)
+        valid = torch.tensor([[False, False, True, True, True], [False, True, True, True, False]])
+        for selection in ("full", "image_only"):
+            config = replace(self.config, mode="position_bottleneck", selection=selection)
+            rng = torch.get_rng_state()
+            encoder, decoder = build_token_modules(config)
+            self.assertTrue(torch.equal(rng, torch.get_rng_state()))
+            self.assertIs(type(encoder), TokenEncoder)
+            self.assertIsInstance(decoder, PositionBottleneckDecoder)
+            self.assertNotIn("query", dict(decoder.named_parameters()))
+            latent = encoder(prefix, valid)
+            result = decoder(latent, prefix, valid)
+            self.assertEqual(result.shape, prefix.shape)
+            self.assertTrue(torch.isfinite(result).all())
+            self.assertTrue(torch.equal(result, decoder(latent, prefix + 100, valid)))
+            for changed in (latent * 0, latent.flip(0)):
+                self.assertFalse(torch.equal(result, decoder(changed, prefix, valid)))

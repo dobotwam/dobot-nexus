@@ -13,6 +13,9 @@ from .transitions import ObservationID, Transition
 from .routing import PolicySwitch
 
 
+CACHE_FORMAT = "rltoken_episode_cache_v2"
+
+
 @dataclass
 class Episode:
     episode_id: str
@@ -34,8 +37,8 @@ def build_cache(provider, episodes, destination, *, chunk_size, dataset_version,
                 gamma_step, seed=0, validation_fraction=0.2, stride=None, reference_num_steps=10,
                 policy_switch=None):
     switch = PolicySwitch(**(policy_switch or {}))
-    if not dataset_version or not reward_definition or not 0 < validation_fraction < 1:
-        raise ValueError("Cache requires versioned data/reward definitions and a validation split.")
+    if not dataset_version or not reward_definition or not 0 <= validation_fraction < 1:
+        raise ValueError("Cache requires data/reward versions and validation_fraction in [0,1).")
     if not 0 <= gamma_step <= 1 or chunk_size <= 0:
         raise ValueError("Invalid cache discount/chunk.")
     if type(reference_num_steps) is not int or reference_num_steps <= 0:
@@ -45,7 +48,7 @@ def build_cache(provider, episodes, destination, *, chunk_size, dataset_version,
         raise ValueError("Cache stride must be in [1,chunk_size].")
     provider.eval().requires_grad_(False)
     spec = RLFeatureSpec.from_dict(provider.artifact_metadata()["rl_features"])
-    metadata = dict(format="rltoken_episode_cache_v1", feature_spec=spec.to_dict(),
+    metadata = dict(format=CACHE_FORMAT, feature_spec=spec.to_dict(),
                     dataset_version=dataset_version, reward_definition=reward_definition,
                     chunk_size=chunk_size, stride=stride, gamma_step=gamma_step, seed=seed, reference_num_steps=reference_num_steps,
                     **switch.identity())
@@ -76,7 +79,7 @@ def build_cache(provider, episodes, destination, *, chunk_size, dataset_version,
         if episode.supervision_mask is not None and (episode.supervision_mask.shape != (total,)
                                                       or episode.supervision_mask.dtype != torch.bool):
             raise ValueError("Supervision mask must be bool [T].")
-        success = episode.success if episode.success is not None else (bool(episode.rewards[-1] > 0) if episode.terminated else None)
+        success = episode.success
         # A pure-VLA MC label cannot contain human interventions.
         pure_vla = episode.origin == "vla" and not episode.takeover.any()
         returns = torch.zeros(total)
@@ -155,6 +158,8 @@ def build_cache(provider, episodes, destination, *, chunk_size, dataset_version,
     for origin in sorted(set(origins.values())):
         ordered = sorted([key for key, value in origins.items() if value == origin],
                          key=lambda value: content_digest((seed, value)))
+        if validation_fraction == 0:
+            continue
         if len(ordered) < 2:
             raise ValueError("Each offline origin requires at least two episodes for held-out validation.")
         count = max(1, min(len(ordered) - 1, round(len(ordered) * validation_fraction)))
@@ -165,7 +170,7 @@ def build_cache(provider, episodes, destination, *, chunk_size, dataset_version,
     rows = {"train": [], "validation": []}
     for key, episode_rows in all_rows.items():
         rows["validation" if key in validation_ids else "train"].extend(episode_rows)
-    if any(not split for split in rows.values()):
+    if not rows["train"] or (validation_fraction > 0 and not rows["validation"]):
         raise ValueError("Cache split contains no admissible chunks.")
     path = Path(destination)
     path.mkdir(parents=True, exist_ok=False)
@@ -184,6 +189,10 @@ def load_cache(path, spec, *, chunk_size, reward_definition, gamma_step=None, re
     # Local trusted artifact; never accept arbitrary network pickle payloads.
     payload = torch.load(path / "cache.pt", map_location="cpu", weights_only=False)
     metadata = payload["metadata"]
+    if metadata.get("format") != CACHE_FORMAT:
+        raise ValueError(
+            f"Unsupported cache format {metadata.get('format')!r}; rebuild as {CACHE_FORMAT}."
+        )
     if PolicySwitch(**metadata.get("policy_switch", {})) != switch:
         raise ValueError("Cache policy_switch identity mismatch; rebuild with the training phase controls.")
     if (content_digest(payload) != manifest["payload_digest"]

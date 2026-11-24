@@ -133,7 +133,7 @@ class RolloutWorker(Worker):
             seed=int(self.config.exp.get("seed", 0)),
             max_batch_size=environment_batch_size(self.config.environment),
             reference_num_steps=self.config.algorithm.get("reference_num_steps",
-                10 if self.config.algorithm.get("recipe") == "rlt_td3_dual_residual_v1" else None),
+                10 if self.config.algorithm.get("recipe") == "rlt_td3_residual_v1" else None),
         )
         return True
 
@@ -222,7 +222,8 @@ class LearnerWorker(Worker):
             seed=learning.seed,
             task_fingerprint=self.task_fingerprint,
             training_scope=PolicySwitch.from_config(self.config).training_scope,
-            allow_terminal_chunks=self.config.algorithm.get("recipe") in {"rlt_ac_terminal_v2", "rlt_td3_dual_residual_v1"},
+            allow_terminal_chunks=self.config.algorithm.get("recipe")
+            in {"rlt_ac_terminal_v2", "rlt_td3_residual_v1"},
         )
         self.learner = create_learner(
             policy.feature_spec, policy.head_config, learning, replay, device=device, policy=policy
@@ -234,9 +235,14 @@ class LearnerWorker(Worker):
             if restored_run != self.run_id:
                 raise ValueError("Resume run identity mismatch.")
         elif self.config.algorithm.get("initialize_from"):
-            from .pretraining import initialize_from_stage
-            initialize_from_stage(self.learner, self.config.algorithm.initialize_from,
-                                  task_identity=self.config.algorithm.task_identity)
+            from .pretraining import initialize_from_prewarm
+
+            initialize_from_prewarm(
+                self.learner,
+                self.config.algorithm.initialize_from,
+                task_identity=self.config.algorithm.task_identity,
+                inherit_optimizer=self.config.algorithm.get("inherit_prewarm_optimizer", True),
+            )
         if self.config.data.get("offline_cache") and not self.resume_path:
             from .offline_data import load_cache
             cache = load_cache(self.config.data.offline_cache, policy.feature_spec,

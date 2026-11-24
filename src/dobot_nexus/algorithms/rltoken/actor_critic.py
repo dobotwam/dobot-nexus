@@ -65,6 +65,7 @@ def build_actor(spec, config):
 
 def build_critic(spec, config):
     if config.residual is not None:
-        from .residual import ExplicitResidualQ
-        return ExplicitResidualQ(spec, config)
+        from .residual import ResidualTwinQ
+
+        return ResidualTwinQ(spec, config)
     return TwinQ(spec, config)

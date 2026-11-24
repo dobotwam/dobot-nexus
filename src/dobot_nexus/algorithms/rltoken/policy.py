@@ -56,16 +56,23 @@ class RLTokenPolicy(BaseVLAModule):
             raise ValueError("Raw robot state_dim must match the feature provider.")
         self._policy_spec = PolicySpec(
             "rltoken",
-            "rlt_td3_dual_residual_v1" if self.head_config.residual is not None else "rlt_ac_v1",
+            "rlt_td3_residual_v1" if self.head_config.residual is not None else "rlt_ac_v1",
             tuple(metadata["camera_names"]),
             self.config.model.state_dim,
             self.feature_spec.action_dim,
             self.head_config.chunk_size,
             tuple(metadata.get("image_size", (224, 224))),
         )
-        self.actor = build_actor(self.feature_spec, self.head_config)
+        residual = self.head_config.residual is not None
+        with torch.random.fork_rng(devices=[], enabled=residual):
+            if residual:
+                algorithm = self.config.get("algorithm", {})
+                learning = algorithm.get("learning", {}) if isinstance(algorithm, dict) else {}
+                torch.random.default_generator.manual_seed(learning.get("seed", 0))
+            self.actor = build_actor(self.feature_spec, self.head_config)
+            if mode == "train":
+                self.critic = build_critic(self.feature_spec, self.head_config)
         if mode == "train":
-            self.critic = build_critic(self.feature_spec, self.head_config)
             self.adapter = ReplayAdapter()
         else:
             self.provider, self.provider_config, _ = load_provider(root)
@@ -107,7 +114,7 @@ class RLTokenPolicy(BaseVLAModule):
         if self.mode != "train":
             raise RuntimeError("training_step requires a learner policy.")
         if self.head_config.residual is not None:
-            raise RuntimeError("Residual TD3 updates belong to TD3Learner and its phase optimizers.")
+            raise RuntimeError("Residual TD3 updates belong to TD3Learner.")
         if batch["update"] == "critic":
             loss = critic_loss(
                 self.critic(batch["latent"], batch["state"],
@@ -143,7 +150,7 @@ class RLTokenPolicy(BaseVLAModule):
             self.feature_spec, chunk_size=self.head_config.chunk_size
         )
         device = next(self.actor.parameters()).device
-        seed = sampling_seed(base_seed, "actor")
+        seed = sampling_seed(options.seed, "actor")
         generator = torch.Generator(device=device).manual_seed(seed) if seed is not None else None
         actions = routed_actions(self.actor,
             packet.latent.to(device),
@@ -185,5 +192,5 @@ class RLTokenPolicy(BaseVLAModule):
         return {
             **super().artifact_metadata(),
             "rl_features": self.feature_spec.to_dict(),
-            "algorithm": "rlt_td3_dual_residual_v1" if self.head_config.residual is not None else "rlt_ac_v1",
+            "algorithm": self.policy_spec.implementation,
         }

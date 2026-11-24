@@ -1,4 +1,4 @@
-extends: dobot_td3.yaml
+extends: td3_online.yaml
 exp:
   name: rltoken_frozen_cache
 algorithm:
@@ -12,8 +12,6 @@ data:
   path: ${env:RLT_DATASET,/path/to/lerobot}
   action_key: action
   state_key: observation.state
-  # Boolean per-frame phase state, including the final observation.
-  policy_switch_key: rlt_switch_flags
   images:
     base: observation.images.base
     left_wrist: observation.images.left_wrist
@@ -26,7 +24,6 @@ data:
     stride: 2
     dataset_version: robot_dataset_v1
     reward_definition: sparse_terminal_success_v1
-    # 0.99 ** (1 / 6), consistent with the chunk discount in dobot_td3.yaml.
-    gamma_step: 0.9983263461476896
+    gamma_step: 0.99
     seed: 42
-    validation_fraction: 0.2
+    validation_fraction: 0.0

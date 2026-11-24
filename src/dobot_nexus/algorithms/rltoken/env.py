@@ -26,6 +26,7 @@ class ExecutionFeedback:
     confirmed: bool = True
     reward_finalized: bool = True
     accepted: bool | None = True
+    episode_success: bool | None = None
 
 
 class EnvSession:
@@ -191,6 +192,7 @@ class EnvSession:
             decision.commands.copy(),
             None if unknown_execution else np.asarray(feedback.commands).copy(),
             self.command_id,
+            episode_success=feedback.episode_success if self.reward_mode == "per_step" else None,
             critical_phase=decision.critical_phase,
             record_transition=decision.record_transition,
             next_actor_enabled=(next_packet.action_context.get("rltoken_routing", {}).get("actor_enabled")
