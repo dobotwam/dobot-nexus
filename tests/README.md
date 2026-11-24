@@ -13,18 +13,25 @@ tests/
 ├── test_checkpoint_resume.py       # Artifact、恢复、EMA 与数据进度
 ├── test_seed.py                    # 训练与采样随机数
 ├── test_training_inference.py      # 小模型 train → Artifact → infer / session
+├── test_policy_session.py          # InferencePolicy 锁内输出快照与 CUDA aux 同步契约
 ├── test_inference_transport.py     # WebSocket、NumPy 编码、客户端、串行 worker
 ├── test_repository_structure.py    # 模型公共接口、依赖隔离和可移植路径
+├── data/                           # 共享 quantile/zscore/delta 归一化与 resize_with_pad 契约
 ├── entrypoints/                    # 环境脚本、训练/推理 launcher、真机样例 CLI
 │   └── atom/                       # ATOM 字段映射、相机生命周期、假设备执行与验证契约
 ├── algorithms/recap/              # Return、Advantage、标签、Value 作业与恢复
 ├── models/
-│   ├── pi0/                       # Pi0 模型与数据语义
-│   └── pi05/                       # core、数据、训练、Torch 引擎、部署、Memory
+│   ├── test_memory_compatibility.py # Pi0 / Pi0.5 Memory 导出与跨版本兼容契约
+│   ├── pi0/                       # Pi0 模型、数据、RECAP、Memory 与 FeatureStore 语义
+│   └── pi05/                      # core、数据、训练、Torch 引擎、部署、相机映射、Memory
 │       ├── test_action_boundary.py # 维度约束、投影扩展、内部维度恢复、训推数据边界
+│       ├── test_deploy_cameras.py  # 训练相机列映射解析与 OpenPI / Memory 路由校验
 │       ├── test_recap.py           # Pi0.5 条件策略、Artifact 和推理
 │       └── test_recap_config.py    # RECAP 策略配置与依赖约束
-├── modules/value/                  # Value 网络、损失、预处理与依赖隔离
+├── modules/
+│   ├── memory/                    # FrameSample Memory 类型、采样、Torch 层、会话与特征库
+│   ├── serving/                   # 模型无关 OpenPI 与 Memory WebSocket 协议适配器
+│   └── value/                     # Value 网络、损失、预处理与依赖隔离
 └── fakes.py                        # 公共 CPU 小模型；算法和模型 fixture 随各自测试目录
 ```
 

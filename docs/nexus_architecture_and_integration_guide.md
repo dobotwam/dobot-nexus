@@ -37,7 +37,7 @@ src/dobot_nexus/
 | `examples/configs/{train,infer}/` | 通用配置模板 |
 | `examples/recipes/` | 按任务覆盖模板的完整示例 |
 | `examples/{train,infer}.sh` | 统一启动入口 |
-| `examples/real_robot/dobot_dual_arm_14d/` | 14 维机器人服务、通信客户端及其运行代码 |
+| `examples/real_robot/` | 真机策略服务入口与各机型运行时（双臂 14D、ATOM D 18D、ATOM W 0759 18D 及共享布局契约） |
 | `scripts/env/` | 按模型创建环境、检查安装及可选服务依赖 |
 | `data_processing/` | 独立 PKL → LeRobot 转换，保留可扩展数据字段 |
 | `tests/` | CPU 模块、契约、命令入口检查 |
@@ -170,10 +170,10 @@ GPU 服务器：robot-client → WebSocket policy → Torch 模型
 | `torch_core/` | 训推共用架构、算子、数值策略；导入时不编译 |
 | `training/` | 初始 checkpoint 加载、训练实例的算子编译 |
 | `openpi_torch/` | 推理编译、CUDA Graph、条件投影与视觉编码加速 |
-| `memory/` | 历史采样、特征、会话和 Memory 模型 |
+| `memory/` | Pi0.5 Memory 适配层：冻结视觉编码器、`prepare` 入口与基于 `modules/memory/` 的模型挂载 |
 | `modeling_recap.py`、`data_adapter_recap.py` | RECAP 条件策略的 Pi0.5 模型与观测接入 |
 | `configuration_recap.py`、`data/recap.py` | RECAP 策略 Artifact 恢复、标签关联与条件 token 路由 |
-| `deploy/` | Pi0.5 服务装配与机器人输入适配 |
+| `deploy/` | 基于 `modules/serving/` 的 Pi0.5 服务装配、相机列映射与冻结视觉加载 |
 
 BC、RECAP 和 Memory 共享 Pi0.5 core；RECAP 和 Memory 使用各自的 `model.target`。
 `openpi_torch` 负责 Torch 推理加速；加速参数需要与 Artifact 的数值策略匹配。

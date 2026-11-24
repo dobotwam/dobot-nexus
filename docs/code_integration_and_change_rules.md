@@ -23,7 +23,8 @@
 | 同一模型的新 backend | 模型自己的 backend 子目录 | 否 |
 | tokenizer、action codec、数据映射 | 模型自己的 adapter/pipeline/assets | 否 |
 | 单次 forward/loss 变化 | 新 `model.target` 或 `training_step()` | 否 |
-| rollout、多模型、多 optimizer | 新具体 Trainer 和模型算法组件 | 是，但只扩展必要调度能力 |
+| 独立算法流程与离线/在线作业 | `src/dobot_nexus/algorithms/<algorithm>/` | 否（仅在多优化器/在线 RL 需要时扩展 Trainer 路由） |
+| 已被两个以上模型稳定复用的模型无关组件 | `src/dobot_nexus/modules/<component>/` | 仅提取模型无关原语，不引入模型依赖 |
 | 设备、FSDP、mixed precision | Runtime | 仅增加模型无关能力 |
 | 保存、恢复、部署格式 | Artifact hook 和模型私有导出器 | 仅增加模型无关能力 |
 
@@ -105,9 +106,10 @@ decode_actions(actions, *, aux=None) -> PolicyOutput
 
 可以直接复用：
 
-- 公共 contracts、LeRobot reader、action transform 和统计数学。
+- 公共 contracts、LeRobot reader、`data/` 下的图像 `resize_with_pad`、action transform 与统计/归一化数学（`zscore`/`quantile`/整数安全 `delta`）。
 - BCTrainer、Runtime、ArtifactManager、InferencePolicy、PolicySession。
-- `inference/transport/` 的 WebSocket/NumPy wire 协议和 `worker.py` 的串行执行。
+- `inference/transport/` 的 WebSocket/NumPy wire 协议与 `worker.py` 的串行执行。
+- 公共 `modules/` 下的模型无关组件：`modules/value/`、`modules/memory/`、`modules/serving/`。
 - 语义完全一致的同模型 pipeline。
 
 应当复制到模型目录：
@@ -120,8 +122,8 @@ decode_actions(actions, *, aux=None) -> PolicyOutput
 
 - 一个模型 import 另一个模型的 `torch_core/`、`vendor/`、`integration.py`、adapter、pipeline 或私有 backend。
 - 创建共享 `models/pi/` 来合并 Pi0 和 Pi0.5 的相似实现。
-- 在公共层 import 具体模型。
-- 在通用 transport 中解释模型观测或创建 Memory 历史；这些职责属于模型的 `deploy/` 装配层。
+- 在公共层或 `modules/` 中 import 具体模型或算法作业编排器。
+- 在通用 `inference/transport/` 中解释模型观测、相机布局或 Memory 状态；模型无关协议适配归 `modules/serving/`，Artifact/相机列解析与冻结视觉编码器装配归模型的 `deploy/`。
 - 将 Ray、RLinf worker、scheduler、registry 或 policy wrapper 放入 vendor 算子快照。
 - 通过环境变量偷偷发现必需依赖；自定义路径必须由配置显式传入并校验。
 

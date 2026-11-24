@@ -8,9 +8,9 @@
 本文面向使用本仓库训练自有 Pi0.5 任务的算法和工程用户，覆盖从环境、LeRobot 数据、任务
 配置、单卡/多卡训练、断点续训，到 Artifact 验收和推理部署的完整流程。
 
-仓库当前提供的是 Behavior Cloning（BC/SFT）训练闭环。Pi0.5 训练使用仓库内置的 PyTorch
-operator core；每次保存 checkpoint 都会保存 PyTorch 部署权重和模型专属资源。
-正式训练应根据数据规模和验证结果选择训练步数。
+本文主要说明 Pi0.5 的 Behavior Cloning（BC/SFT）训练与部署闭环；Pi0.5 训练使用仓库内置的 PyTorch
+operator core，每次保存 checkpoint 都会保存 PyTorch 部署权重和模型专属资源。
+正式训练应根据数据规模和验证结果选择训练步数。RECAP 离线优势条件策略见 [RECAP 使用说明](recap/README.md)。
 
 Memory 的分步操作见 [Memory 训练与推理操作指南](pi05_memory.md)。
 

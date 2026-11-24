@@ -20,7 +20,7 @@
 | 模型 | 默认环境 | 算子/外部实现 | 主要依赖边界 |
 |---|---|---|---|
 | Pi0.5 BC / RECAP policy / Memory | `.venvs/pi05` | 本地 `models/pi05/torch_core/`，Torch 训练/部署 | `datasets`、`lerobot>=0.3,<0.5`、`sentencepiece`、`einops` |
-| Pi0 | `.venvs/pi0` | 独立 `models/pi0/training/vendor/rlinf_core/` | 同类数据依赖，独立维护算子 |
+| Pi0 BC / RECAP policy / Memory | `.venvs/pi0` | 独立 `models/pi0/training/vendor/rlinf_core/` | 同类数据依赖，独立维护算子 |
 
 禁止把模型专属依赖移入公共 requirements。`pip install -e .` 只安装最小 Nexus 包，
 不等于准备好了完整训练环境；从源码训练优先使用环境脚本。
@@ -99,7 +99,7 @@ W&B 和 TensorBoard 独立可选，不属于模型必需依赖：
 
 ## RECAP Value 与数据转换
 
-RECAP policy 使用 Pi0.5 环境；离线 Value/标注另需其依赖入口：
+RECAP policy 使用对应模型环境（`.venvs/pi05` 或 `.venvs/pi0`）；离线 Value/标注另需其依赖入口：
 
 ```bash
 .venvs/pi05/bin/python -m pip install \

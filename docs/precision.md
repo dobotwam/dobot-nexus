@@ -3,7 +3,7 @@
 [README](../README.md#进阶参考) · [训练参数](pi05_training.md) · [离线推理](getting_started/04_inference.md)
 
 Pi0、Pi0.5 策略默认使用 BF16 计算。训练保留 FP32 持久参数和 Adam 状态；
-推理默认加载 BF16 参数。Pi0.5 RECAP 和 Memory 策略共用这组配置规则。
+推理默认加载 BF16 参数。Pi0 与 Pi0.5 的 RECAP 和 Memory 策略共用这组配置规则。
 
 | 字段 | 生效阶段 | 默认值与行为 |
 |---|---|---|

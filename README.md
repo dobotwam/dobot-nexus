@@ -37,7 +37,7 @@ Instead of coupling training loops, inference servers, and robot hardware to a s
 
 - **Zero-Registry, Contract-First Extensibility**: Point `model.target` in YAML to any internal or external class/factory whose `from_config` returns a `BaseVLAModule` (owning a `BaseDataAdapter` defined in `src/dobot_nexus/models/base.py`). Model-owned operators stay strictly isolated with no cross-model imports.
 - **Unified Policy Train → Artifact → Serve Loop**: `BCTrainer` exports Schema v2 Artifacts that separate portable deployment weights/assets (`deployment/`) from optional distributed resume states (`resume/`). Inference restores the model target, dimensions, data mappings, and declared training assets directly from the Artifact (external `model.target` implementations still require their Python package at deployment).
-- **Multi-Paradigm VLA Stack**: Implemented in `v1.0` with CPU contract tests for **Behavior Cloning (BC)**, **Long-Horizon Memory (`Pi0.5-Memory` / `Pi0-Memory`)**, and **Offline RL / Advantage-Conditioned Policies (`RECAP / ACP` for both Pi0.5 and Pi0)** with shared reusable Value networks (`modules/value/`).
+- **Multi-Paradigm VLA Stack**: Implemented in `v1.0` with CPU contract tests for **Behavior Cloning (BC)**, **Long-Horizon Memory (`Pi0.5-Memory` / `Pi0-Memory`)**, and **Offline RL / Advantage-Conditioned Policies (`RECAP / ACP` for both Pi0.5 and Pi0)** backed by shared reusable components (`modules/memory/`, `modules/serving/`, `modules/value/`).
 - **Numerical & Security Hardening**: Explicit BF16/FP32 precision contracts ([`docs/precision.md`](docs/precision.md)), cross-rank NaN/Inf update guards, `weights_only=True` deserialization, opt-in trusted DCP resume, loopback-by-default HTTP/WebSocket serving with token auth required on non-loopback binds, HTTP session isolation, Memory WS per-connection history, and HMAC-SHA256 Robot TCP v2 transport ([`SECURITY.md`](SECURITY.md)).
 - **Real-Robot Integration**: Includes **Dobot Dual-Arm 14D** (3-process WS + TCP v2 bridge), **ATOM D 18D** (documented PC2 single-host closed-loop folding setup with Home-start, `replay_seed` seed-preserving recomputation, up to 4 bridge rows within 2° of the final command of the preceding chunk plus separate 4° handoff seam checks, and interactive terminal control), and **ATOM W 0759 18D** hardware runtime.
 - **Architectural Path to WM & WAM**: Active design package ([`docs/wm/`](docs/wm/README.md)) proposing how to extend Nexus's shared config loader, `Experiment`, `Runtime`, and tracking to **Wan2.2** video world models and later action-conditioned embodied dynamics toward WAM.
@@ -46,18 +46,21 @@ Instead of coupling training loops, inference servers, and robot hardware to a s
 
 ## Model, Paradigm & Embodiment Matrix
 
-| Family | Paradigm / Recipe | Model / Target | Training | Inference & Serving | Real Robot | Status |
-| --- | --- | --- | --- | --- | --- | --- |
-| **VLA** | Behavior Cloning (BC) | **Pi0.5** (`Pi05Model`) | Local / Accelerate / FSDP2, EMA, DCP | Offline, HTTP, WS, Torch inference (optional CUDA Graph) | Dual-Arm 14D, ATOM D 18D, ATOM W 0759 18D | **Implemented (`v1.0`, CPU contracts tested)** |
-| **VLA** | Long-Horizon Memory | **Pi0.5-Memory** (`Pi05MemoryModel`) | Frozen vision feature store + BC loop | Per-connection session history WS (`MemorySession`) | Dual-Arm 14D | **Implemented (`v1.0`, CPU contracts tested)** |
-| **VLA** | Offline RL / ACP | **Pi0.5-RECAP** (`Pi05ReCapModel`) | Offline Value (`Fusion`, separate `.pt` ckpt) + advantage labeling + ACP | Conditional policy HTTP / WS | Dual-Arm 14D | **Implemented (`v1.0`, CPU contracts tested)** |
-| **VLA** | Behavior Cloning (BC) | **Pi0** (`Pi0Model`, state/action each 1–32D) | Local / Accelerate / FSDP2, EMA, DCP | Offline, HTTP | — | **Implemented (`v1.0`, CPU contracts tested)** |
-| **VLA** | Long-Horizon Memory | **Pi0-Memory** (`Pi0MemoryModel`, 1–32D) | Frozen SigLIP feature store (`pi0.memory.prepare`) + BC loop | Per-session history (`MemorySession` / `pi0.memory.infer`) | — | **Implemented (`v1.0`, CPU contracts tested)** |
-| **VLA** | Offline RL / ACP | **Pi0-RECAP** (`Pi0ReCapModel`, 1–32D) | Offline Value (`Fusion`, separate `.pt` ckpt) + advantage labeling + ACP | Conditional policy Offline / HTTP | — | **Implemented (`v1.0`, CPU contracts tested)** |
-| **WM** | Video Generation (T2V / I2V) | **Wan2.2** (proposed `TI2V-5B` first, then `I2V-A14B`) | Proposed flow matching, LoRA / dual-expert | Proposed offline generator, then async job server | — | **In Design** ([`docs/wm/`](docs/wm/README.md)) |
-| **WAM** | Action-Conditioned Dynamics & World-Action Unification | Embodied WM + Policy Direction | Proposed action-conditioned rollout (planner external) | Research direction beyond WM v1 | — | **Roadmap** |
+Models and training paradigms are orthogonal in Dobot Nexus—each row below is one model family, while shared training/serving paradigms compose across models:
 
-> **Scope & verification note**: All **VLA** rows above are implemented in `v1.0` and covered by fast CPU unit/contract tests in CI (live GPU training, FSDP2 scaling, CUDA Graph speedups, and robot task success require your own GPU/hardware verification; see [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md) for the documented ATOM D field setup). **WM (Wan2.2)** currently consists of design and pseudocode specifications under [`docs/wm/`](docs/wm/README.md) with no runnable WM CLI/code yet; **WAM** is a longer-term platform direction.
+| Family | Model | Supported Paradigms | Inference & Serving | Real Robot | Status |
+| --- | --- | --- | --- | --- | --- |
+| **VLA** | **Pi0.5** (`Pi05Model` / `Pi05MemoryModel` / `Pi05ReCapModel`) | BC · Memory · RECAP (ACP) | Offline, HTTP, WS, Memory WS, Torch inference (optional CUDA Graph) | Dual-Arm 14D (BC / Memory / RECAP), ATOM D 18D, ATOM W 0759 18D | **Implemented (`v1.0`, CPU contracts tested)** |
+| **VLA** | **Pi0** (`Pi0Model` / `Pi0MemoryModel` / `Pi0ReCapModel`, 1–32D) | BC · Memory · RECAP (ACP) | Offline, HTTP, `MemorySession` (`pi0.memory.infer`) | — | **Implemented (`v1.0`, CPU contracts tested)** |
+| **WM** | **Wan2.2** (proposed `TI2V-5B` first, then `I2V-A14B`) | Video Generation (T2V / I2V: Flow Matching, LoRA / dual-expert) | Proposed offline generator → async job server | — | **In Design** ([`docs/wm/`](docs/wm/README.md)) |
+| **WAM** | Embodied WM + Policy Direction | Action-Conditioned Dynamics & World-Action Unification | Research direction beyond WM v1 (planner external) | — | **Roadmap** |
+
+**Shared VLA Paradigms (orthogonal to models)**:
+- **Behavior Cloning (BC)**: `training/bc_trainer.py` (Local / Accelerate / FSDP2, EMA, DCP resume) + Schema v2 Artifacts.
+- **Long-Horizon Memory**: `modules/memory/` (frozen vision feature store + per-environment `MemorySession` + Torch attention/modulation layers) and `modules/serving/` (Memory WebSocket adapter).
+- **Offline RL / RECAP (ACP)**: `algorithms/recap/` + `modules/value/` (offline `Fusion` Value network with separate `.pt` ckpt, advantage labeling, and advantage-conditioned policy training via `BCTrainer`).
+
+> **Scope & verification note**: Both **VLA** model rows above (and all three VLA paradigms) are implemented in `v1.0` and covered by fast CPU unit/contract tests in CI (live GPU training, FSDP2 scaling, CUDA Graph speedups, and robot task success require your own GPU/hardware verification; see [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md) for the documented ATOM D field setup). **WM (Wan2.2)** currently consists of design and pseudocode specifications under [`docs/wm/`](docs/wm/README.md) with no runnable WM CLI/code yet; **WAM** is a longer-term platform direction.
 
 ### Supported Data & Robot Contracts
 
@@ -165,11 +168,11 @@ dobot-nexus/
 ├── src/dobot_nexus/
 │   ├── cli/                   # Unified CLI: train / infer / serve / tensorboard
 │   ├── core/                  # Config resolution, contracts, Experiment, Schema v2 Artifacts
-│   ├── data/                  # Shared LeRobot readers, image conversion, observation IO, stats & cache
+│   ├── data/                  # Shared LeRobot readers, resize_with_pad, zscore/quantile/delta transforms & stats
 │   ├── training/              # BCTrainer, Local/Accelerate/FSDP2 runtime, EMA, DCP resume, tracking
-│   ├── inference/             # InferencePolicy, PolicySession, HTTP/WS servers, security guards
+│   ├── inference/             # InferencePolicy, PolicySession, HTTP/WS servers, transport, security guards
 │   ├── algorithms/recap/      # Returns, advantages, offline Value training & dataset labeling
-│   ├── modules/value/         # Reusable Fusion value networks, distributions & losses
+│   ├── modules/               # Reusable model-agnostic components: value/, memory/, serving/
 │   └── models/                # BaseVLAModule/BaseDataAdapter contract + isolated models (pi05/, pi0/)
 ├── data_processing/           # Dobot dual-arm 14D recorder PKL -> LeRobot v2.1 converter
 ├── examples/                  # Train/infer YAML configs, task recipes, real-robot & ATOM runtimes

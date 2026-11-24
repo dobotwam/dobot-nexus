@@ -6,7 +6,8 @@
 
 `examples/` 保存用户可直接运行的配置与统一入口。`configs/train/` 保存通用训练模板，
 `recipes/` 保存具体任务的差异配置。Pi0.5 的 BC、RECAP、Memory 分别使用
-`pi05.yaml`、`pi05_recap.yaml`、`pi05_memory.yaml`，统一经 `train.sh` 启动。
+`pi05.yaml`、`pi05_recap.yaml`、`pi05_memory.yaml`（Pi0 对应 `pi0.yaml`、`pi0_recap.yaml`、`pi0_memory.yaml`），
+统一经 `train.sh` 启动。
 
 USB BC/RECAP、按钮 BC/Memory、KBD 抓取的参数和启动方法见 [任务 recipes](recipes/README.md)。
 原始采集数据转换入口见 [`data_processing/`](../data_processing/README.md)。

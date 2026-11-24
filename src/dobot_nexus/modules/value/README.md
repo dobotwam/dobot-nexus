@@ -71,5 +71,5 @@ pip install -r src/dobot_nexus/modules/value/fusion/requirements.txt
 
 RECAP 作业安装 `src/dobot_nexus/algorithms/recap/value/requirements.txt`，
 其中包含上述依赖及 RECAP 数据读取依赖。Transformers 固定为 `4.53.2`，
-模型和 tokenizer 仅从本地资产加载。Pi0 可单独调用本组件；
-完整 RECAP policy 条件化和标签接入需要对应模型的数据适配。
+模型和 tokenizer 仅从本地资产加载。Pi0.5 与 Pi0 均已完成 RECAP policy 接入；
+其他新模型同样可独立调用本组件并按需完成条件化数据适配。

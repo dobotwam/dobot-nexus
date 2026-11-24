@@ -37,7 +37,7 @@
 
 - **零注册表、契约优先扩展**：在 YAML 中通过 `model.target` 指向任意仓内或仓外类/工厂，其 `from_config` 返回实现 `BaseVLAModule`（并持有 `BaseDataAdapter`，定义于 `src/dobot_nexus/models/base.py`）的模型实例；各模型算子完全隔离、互不交叉导入。
 - **策略训练 → Artifact → 推理同源闭环**：`BCTrainer` 导出的 Schema v2 Artifact 将可移植部署权重/资产（`deployment/`）与可选分布式续训状态（`resume/`）分离；推理直接从 Artifact 恢复模型目标、维度、数据映射及声明资产（外部 `model.target` 在部署环境中仍需安装对应 Python 包）。
-- **多范式 VLA 策略栈**：`v1.0` 已实现并通过 CPU 契约测试覆盖 **行为克隆（BC）**、**长时序历史记忆（`Pi0.5-Memory` / `Pi0-Memory`）** 与 **离线强化学习 / 优势条件策略（Pi0.5 与 Pi0 均支持 `RECAP / ACP`）**，并沉淀通用 Value 网络组件（`modules/value/`）。
+- **多范式 VLA 策略栈**：`v1.0` 已实现并通过 CPU 契约测试覆盖 **行为克隆（BC）**、**长时序历史记忆（`Pi0.5-Memory` / `Pi0-Memory`）** 与 **离线强化学习 / 优势条件策略（Pi0.5 与 Pi0 均支持 `RECAP / ACP`）**，底层复用通用共享组件（`modules/memory/`、`modules/serving/`、`modules/value/`）。
 - **数值与安全加固**：明确的 BF16/FP32 精度契约（[`docs/precision.md`](docs/precision.md)）、跨 rank NaN/Inf 更新熔断、`weights_only=True` 受限反序列化、显式信任开关控制的 DCP 续训、默认回环绑定并在非回环绑定时强制 Token 认证的 HTTP/WebSocket 服务、HTTP 会话隔离、Memory WS 按连接隔离历史，以及基于 `msgpack` + HMAC-SHA256 的 Robot TCP v2 协议（[`SECURITY.md`](SECURITY.md)）。
 - **真机集成能力**：包含 **Dobot 双臂 14D**（三进程 WebSocket + TCP v2 链路）、**ATOM D 18D**（已记录的 PC2 单机闭环双臂叠衣方案，支持 Home-start、`replay_seed` 同种子重算、最多 4 行相对上一段末指令 ≤2° 的过渡前缀与独立 4° 换段接缝校验，以及交互式终端控制）与 **ATOM W 0759 18D** 硬件运行时。
 - **面向 WM 与 WAM 的演进规划**：已提供世界模型设计草案（[`docs/wm/`](docs/wm/README.md)），规划在复用 Nexus 配置解析、`Experiment`、`Runtime` 与指标追踪底座的基础上接入 **Wan2.2** 视频世界模型，并进一步探索动作条件具身动力学与 WAM 方向。
@@ -46,18 +46,21 @@
 
 ## 模型、范式与本体支持矩阵
 
-| 模型家族 | 训练范式 / 配方 | 模型 / Target | 训练能力 | 推理与服务 | 真机支持 | 当前状态 |
-| --- | --- | --- | --- | --- | --- | --- |
-| **VLA** | 行为克隆（BC） | **Pi0.5** (`Pi05Model`) | Local / Accelerate / FSDP2、EMA、DCP 续训 | 离线、HTTP、WS、Torch 推理（可选 CUDA Graph） | 双臂 14D、ATOM D 18D、ATOM W 0759 18D | **已实现（`v1.0`，CPU 契约已测）** |
-| **VLA** | 长时序记忆（Memory） | **Pi0.5-Memory** (`Pi05MemoryModel`) | 冻结视觉历史特征库 + BC 训练 | 按连接隔离历史会话的 WS 服务（`MemorySession`） | 双臂 14D | **已实现（`v1.0`，CPU 契约已测）** |
-| **VLA** | 离线 RL / ACP | **Pi0.5-RECAP** (`Pi05ReCapModel`) | 离线 Value（`Fusion`，独立 `.pt` 检查点）+ 优势标注 + 条件策略 | 条件策略 HTTP / WS 服务 | 双臂 14D | **已实现（`v1.0`，CPU 契约已测）** |
-| **VLA** | 行为克隆（BC） | **Pi0** (`Pi0Model`，state/action 各自 1–32 维) | Local / Accelerate / FSDP2、EMA、DCP 续训 | 离线、HTTP | — | **已实现（`v1.0`，CPU 契约已测）** |
-| **VLA** | 长时序记忆（Memory） | **Pi0-Memory** (`Pi0MemoryModel`，1–32 维) | 冻结 SigLIP 历史特征库（`pi0.memory.prepare`）+ BC 训练 | 按会话隔离历史推理（`MemorySession` / `pi0.memory.infer`） | — | **已实现（`v1.0`，CPU 契约已测）** |
-| **VLA** | 离线 RL / ACP | **Pi0-RECAP** (`Pi0ReCapModel`，1–32 维) | 离线 Value（`Fusion`，独立 `.pt` 检查点）+ 优势标注 + 条件策略 | 条件策略离线 / HTTP 服务 | — | **已实现（`v1.0`，CPU 契约已测）** |
-| **WM** | 视频生成（T2V / I2V） | **Wan2.2**（建议先 `TI2V-5B`，再 `I2V-A14B`） | 规划 Flow Matching、LoRA / 双专家 | 规划先离线生成，再扩展异步任务服务 | — | **设计阶段**（[`docs/wm/`](docs/wm/README.md)） |
-| **WAM** | 动作条件动力学与世界-动作统一方向 | 具身 WM + 策略融合方向 | 规划动作条件预测与推演（规划器在外部） | WM 首版之后的长期演进方向 | — | **路线图** |
+在 Dobot Nexus 中，**模型家族**与**训练范式**正交解耦：下表按模型一行列出支持能力，通用范式与共享组件跨模型复用：
 
-> **范围与验证说明**：表中各 **VLA** 条目均已在 `v1.0` 中实现并有对应的 CI 快速 CPU 单元/契约测试覆盖（实际 GPU 训练、FSDP2 扩展、CUDA Graph 加速和真机任务成功率需在目标 GPU/硬件环境中验证；ATOM D 现场部署配置见 [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md)）。**WM（Wan2.2）** 目前仅为 [`docs/wm/`](docs/wm/README.md) 下的架构与伪代码设计文档，尚未包含可运行的 WM CLI 或代码实现；**WAM** 为更长期的平台演进方向。
+| 模型家族 | 模型 | 支持范式 | 推理与服务 | 真机支持 | 当前状态 |
+| --- | --- | --- | --- | --- | --- |
+| **VLA** | **Pi0.5** (`Pi05Model` / `Pi05MemoryModel` / `Pi05ReCapModel`) | BC · Memory · RECAP (ACP) | 离线、HTTP、WS、Memory WS、Torch 推理（可选 CUDA Graph） | 双臂 14D（BC / Memory / RECAP）、ATOM D 18D、ATOM W 0759 18D | **已实现（`v1.0`，CPU 契约已测）** |
+| **VLA** | **Pi0** (`Pi0Model` / `Pi0MemoryModel` / `Pi0ReCapModel`，1–32 维) | BC · Memory · RECAP (ACP) | 离线、HTTP、`MemorySession`（`pi0.memory.infer`） | — | **已实现（`v1.0`，CPU 契约已测）** |
+| **WM** | **Wan2.2**（建议先 `TI2V-5B`，再 `I2V-A14B`） | 视频生成（T2V / I2V：Flow Matching、LoRA / 双专家） | 规划：先离线生成 → 异步任务服务 | — | **设计阶段**（[`docs/wm/`](docs/wm/README.md)） |
+| **WAM** | 具身 WM + 策略融合方向 | 动作条件动力学与世界-动作统一方向 | WM 首版之后的长期方向（规划器在外部） | — | **路线图** |
+
+**跨模型复用的 VLA 范式能力**：
+- **行为克隆（BC）**：`training/bc_trainer.py`（Local / Accelerate / FSDP2、EMA、DCP 续训）+ Schema v2 Artifact。
+- **长时序记忆（Memory）**：`modules/memory/`（冻结视觉历史特征库、按环境隔离的 `MemorySession` 与 Torch 注意力/调制层）及 `modules/serving/`（Memory WebSocket 适配器）。
+- **离线 RL / RECAP (ACP)**：`algorithms/recap/` + `modules/value/`（离线 `Fusion` Value 网络与独立 `.pt` 检查点、优势标注，ACP 策略复用 `BCTrainer`）。
+
+> **范围与验证说明**：表中两个 **VLA** 模型及其全部三类范式均已在 `v1.0` 中实现并有对应的 CI 快速 CPU 单元/契约测试覆盖（实际 GPU 训练、FSDP2 扩展、CUDA Graph 加速和真机任务成功率需在目标 GPU/硬件环境中验证；ATOM D 现场部署配置见 [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md)）。**WM（Wan2.2）** 目前仅为 [`docs/wm/`](docs/wm/README.md) 下的架构与伪代码设计文档，尚未包含可运行的 WM CLI 或代码实现；**WAM** 为更长期的平台演进方向。
 
 ### 数据格式与真机契约支持
 
@@ -165,11 +168,11 @@ dobot-nexus/
 ├── src/dobot_nexus/
 │   ├── cli/                   # 统一 CLI：train / infer / serve / tensorboard
 │   ├── core/                  # 配置解析、公共协议、Experiment 与 Schema v2 Artifact
-│   ├── data/                  # 共享 LeRobot 读取、图像转换、观测 IO、统计与缓存
+│   ├── data/                  # 共享 LeRobot 读取、resize_with_pad、zscore/quantile/delta 变换与统计
 │   ├── training/              # BCTrainer、Local/Accelerate/FSDP2 runtime、EMA、DCP 续训、指标记录
-│   ├── inference/             # InferencePolicy、PolicySession、HTTP/WS 服务与安全校验
+│   ├── inference/             # InferencePolicy、PolicySession、HTTP/WS 服务、传输层与安全校验
 │   ├── algorithms/recap/      # 回报/优势计算、离线 Value 训练与数据集标注
-│   ├── modules/value/         # 公共 Fusion Value 网络、分布与损失组件
+│   ├── modules/               # 模型无关公共组件：value/、memory/、serving/
 │   └── models/                # BaseVLAModule/BaseDataAdapter 契约与独立模型实现（pi05/、pi0/）
 ├── data_processing/           # Dobot 双臂 14D 采集 PKL → LeRobot v2.1 转换工具
 ├── examples/                  # 训练/推理配置模板、任务配方、双臂与 ATOM 真机运行时

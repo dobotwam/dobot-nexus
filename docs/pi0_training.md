@@ -1,9 +1,12 @@
 # Pi0 训练与推理
 
-Pi0 的入口是 `dobot_nexus.models.pi0.modeling_pi0:Pi0Model`，使用独立的
-`models/pi0/training/vendor/rlinf_core/` 算子。当前集成覆盖 BC、FSDP2、断点续训、
-Artifact 导出、离线推理和通用 HTTP 服务。RECAP、Memory 和
-`examples/real_robot/dobot_dual_arm_14d/` 的专用部署入口属于 Pi0.5。
+Pi0 的基础入口是 `dobot_nexus.models.pi0.modeling_pi0:Pi0Model`，使用独立的
+`models/pi0/training/vendor/rlinf_core/` 算子。当前集成已覆盖 BC（`Pi0Model`）、
+RECAP 条件策略（`Pi0ReCapModel`，配置模板 `examples/configs/{train,infer}/pi0_recap.yaml`）、
+FrameSample Memory（`Pi0MemoryModel`，特征准备 `python -m dobot_nexus.models.pi0.memory.prepare`、
+会话推理 `python -m dobot_nexus.models.pi0.memory.infer` 与 `examples/configs/{train,infer}/pi0_memory.yaml`），
+以及 FSDP2、断点续训、Artifact 导出、离线推理和通用 HTTP 服务（RECAP 与 Memory 当前均使用 `zscore` 归一化）。
+`examples/real_robot/dobot_dual_arm_14d/` 的专用真机部署入口目前面向 Pi0.5。
 
 ## 模型和权重
 
