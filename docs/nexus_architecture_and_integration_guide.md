@@ -10,21 +10,24 @@
 src/dobot_nexus/
 ├── cli/                    # train / infer / serve 参数与任务入口
 ├── core/                   # 配置、公共输入输出、动态加载、Experiment、Artifact
-├── data/                   # 通用 LeRobot reader、action transform、统计与缓存
+├── data/                   # 通用 LeRobot reader、图像缩放填充、zscore/quantile 归一化、delta 变换与统计
 ├── training/               # BCTrainer、Runtime、EMA、seed、训练恢复
 ├── inference/
-│   ├── policy.py           # 从 Artifact 装配模型并调用完整 action chunk 推理
+│   ├── policy.py           # 从 Artifact 装配模型、锁内快照输出并调用完整 action chunk 推理
 │   ├── session.py          # 缓存动作块、按 execute_steps 消费
 │   ├── handlers.py         # 普通预测请求、种子序列与计时
 │   ├── worker.py           # 串行执行阻塞任务和会话清理
 │   ├── server.py           # Nexus HTTP 接口
 │   └── transport/          # 通用 WebSocket 服务/客户端、NumPy msgpack 编解码
 ├── algorithms/recap/       # Return、Advantage、离线 Value 训练与标注
-├── modules/value/          # 可复用 Value 网络、损失与输入处理
+├── modules/
+│   ├── value/              # 可复用 Value 网络、损失与输入处理
+│   ├── memory/             # 模型无关 FrameSample 记忆类型、位置编码、采样、Torch 层、会话与特征库
+│   └── serving/            # 模型无关 OpenPI 与 Memory WebSocket 协议适配器
 └── models/
     ├── base.py             # 唯一公共模型与 adapter 继承接口
-    ├── pi05/               # Pi0.5、Memory 与 RECAP 策略接入
-    ├── pi0/                # 独立 Pi0 实现及算子快照
+    ├── pi05/               # Pi0.5、Memory 与 RECAP 策略接入（复用 modules/memory 与 modules/serving）
+    ├── pi0/                # 独立 Pi0 实现及算子快照（复用 modules/memory 与 data/）
 ```
 
 仓库外层入口：
@@ -133,13 +136,14 @@ Pi0.5 直接将训练参数保存为裸 Torch core 权重，并打包模型专�
 构造模型，检查输入输出规格并用锁保护完整采样。`PolicySession` 缓存已生成的动作块，
 负责按 `execute_steps` 消费；它不承担 Memory 的观测历史管理。
 
-WebSocket 链路分为三层：
+WebSocket 链路分为四层：
 
 | 层 | 实现位置 | 职责 |
 |---|---|---|
 | 通信 | `inference/transport/` | 连接、消息编码、容量限制、健康检查与客户端超时 |
 | 请求执行 | `inference/worker.py`、`handlers.py` | 串行推理、取消/清理顺序；普通预测的种子与计时 |
-| 模型装配 | `models/pi05/deploy/` | 根据 Artifact 选择 BC/RECAP/Memory，适配机器人观测、预热与创建 Memory 会话 |
+| 协议适配 | `modules/serving/` | 模型无关 OpenPI 观测/动作转换、相机映射校验与 Memory 会话服务 |
+| 模型装配 | `models/pi05/deploy/` | 根据 Artifact 解析训练相机列、选择 BC/RECAP/Memory 与冻结视觉 encoder |
 
 传输层接收请求 callable 和连接上下文管理器，不认识相机字段或模型类型。
 Memory 每个连接维护独立历史、种子和 reset 状态，模型权重与冻结视觉 encoder 在服务中共享。
