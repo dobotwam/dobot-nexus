@@ -309,6 +309,7 @@ class Pi0MemoryTest(unittest.TestCase):
             config = train_config(root, "memory", source)
             config.data.memory_features = str(root / "features")
             config.data.memory_dataset_id = "frames-v1"
+            config.data.field_mapping.language = None  # Frames supply the fallback task prompt.
             vision = root / "vision.npz"
             np.savez(vision, **vision_archive())
             config.model.memory.vision_checkpoint = str(vision)

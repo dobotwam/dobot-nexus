@@ -1,8 +1,9 @@
-"""Immutable episode identity, verified mappings, and the independent mmap LRU."""
+"""Immutable episode identity and the LRU of verified private snapshots."""
 
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,7 +30,7 @@ class FeatureStoreTest(unittest.TestCase):
     def store(self):
         return FrameFeatureStore(self.root, self.config, **self.fields, max_cached_episodes=1)
 
-    def test_lru_eviction_preserves_verification_and_replacement_rechecks_digest(self):
+    def test_eviction_reuses_frame_digests_and_replacement_requires_full_verification(self):
         store = self.store()
         with mock.patch.object(
             feature_store, "_episode_digest", wraps=feature_store._episode_digest
@@ -37,7 +38,6 @@ class FeatureStoreTest(unittest.TestCase):
             for episode in (0, 1, 0):
                 result = store.lookup(episode, 0)
                 self.assertTrue((result.features == episode).all())
-                self.assertEqual(len(store._arrays), 1)
             self.assertEqual(digest.call_count, 2)
             path = self.root / store.manifest["episodes"]["0"]["file"]
             replacement = path.with_suffix(".replacement")
@@ -45,11 +45,64 @@ class FeatureStoreTest(unittest.TestCase):
             replacement.replace(path)
             store.lookup(0, 0)
             self.assertEqual(digest.call_count, 3)
-            replacement.write_bytes(b"invalid")
+            with replacement.open("wb") as handle:
+                np.save(handle, np.full((1, 16, 2048), -1, np.float32))
             replacement.replace(path)
             with self.assertRaisesRegex(ValueError, "Corrupt memory features"):
                 store.lookup(0, 0)
             self.assertEqual(digest.call_count, 4)
+
+    def test_private_snapshot_survives_in_place_write_and_eviction_rechecks_bytes(self):
+        store = self.store()
+        store.lookup(0, 0)
+        snapshot = store._arrays["0"]
+        self.assertFalse(snapshot.flags.writeable)
+        path = self.root / store.manifest["episodes"]["0"]["file"]
+        original = path.stat()
+        with path.open("r+b") as handle:
+            handle.seek(-4, os.SEEK_END)
+            handle.write(np.float32(7.0).tobytes())
+        os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+        np.testing.assert_array_equal(snapshot, 0)
+        store.lookup(1, 0)
+        self.assertNotIn("0", store._verified)
+        with self.assertRaisesRegex(ValueError, "Corrupt memory features"):
+            store.lookup(0, 0)
+
+    def test_in_place_modification_after_eviction_is_rehashed(self):
+        store = self.store()
+        store.lookup(0, 0)
+        store.lookup(1, 0)
+        path = self.root / store.manifest["episodes"]["0"]["file"]
+        before = path.stat()
+        with path.open("r+b") as handle:
+            handle.seek(-4, os.SEEK_END)
+            handle.write(np.float32(99).tobytes())
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, "Corrupt memory features"):
+            store.lookup(0, 0)
+        self.assertFalse(store._arrays)
+        self.assertFalse(store._verified)
+
+    def test_previous_mapping_is_closed_before_allocating_a_new_snapshot(self):
+        store = self.store()
+        self.addCleanup(store.close)
+        first = store.lookup(0, 0)
+        mapping = store._arrays["0"].base
+        create = tempfile.TemporaryFile
+
+        def check_slot(*args, **kwargs):
+            self.assertTrue(mapping.closed)
+            self.assertFalse(store._arrays)
+            self.assertFalse(store._verified)
+            return create(*args, **kwargs)
+
+        with mock.patch.object(tempfile, "TemporaryFile", side_effect=check_slot) as allocate:
+            second = store.lookup(1, 0)
+            allocate.assert_called_once()
+        np.testing.assert_array_equal(first.features, 0)
+        np.testing.assert_array_equal(second.features, 1)
+        self.assertEqual(list(store._arrays), ["1"])
 
     def test_manifest_file_must_resolve_inside_root(self):
         manifest_path = self.root / "manifest.json"
@@ -79,8 +132,9 @@ class FeatureStoreTest(unittest.TestCase):
                 replacement.write_bytes(path.read_bytes())
                 original = getattr(feature_store, operation)
 
-                def replace_after(*args, original=original, replacement=replacement, path=path):
-                    result = original(*args)
+                def replace_after(*args, original=original, replacement=replacement, path=path,
+                                  **kwargs):
+                    result = original(*args, **kwargs)
                     replacement.replace(path)
                     return result
 

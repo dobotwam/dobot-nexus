@@ -19,7 +19,9 @@ def resume_fingerprint(config) -> str:
     for key in ("artifact", "jax_checkpoint", "jax_export_base_checkpoint"):
         model.pop(key, None)
     data = dict(to_plain_dict(config.get("data", {})))
-    data.pop("num_workers", None)
+    # Worker/cache sizing and confirmation of legacy store columns do not change samples.
+    for key in ("num_workers", "memory_legacy_columns", "memory_cache_bytes"):
+        data.pop(key, None)
     runtime = dict(to_plain_dict(config.get("runtime", {})))
     autocast = resolve_autocast(config)
     if autocast == "auto":

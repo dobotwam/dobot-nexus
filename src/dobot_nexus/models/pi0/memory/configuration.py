@@ -2,70 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict
+from dataclasses import dataclass as dataclass
+from dataclasses import fields as fields
 from pathlib import Path
 
 from dobot_nexus.core.config import clone_config
+from dobot_nexus.modules.memory.types import MemoryConfig
 
 from ..configuration_pi0 import restore_token_limit
 
 MODEL_TARGET = "dobot_nexus.models.pi0.memory.modeling_memory:Pi0MemoryModel"
-
-
-@dataclass(frozen=True)
-class MemoryConfig:
-    schema_version: int = 1
-    budget: int = 512
-    window_frames: int | None = None
-    max_frames: int = 8192
-    camera: str = "base"
-    tokens_per_image: int = 16
-    image_dim: int = 2048
-    position_dim: int = 768
-    token_dim: int = 1024
-    vision_checkpoint: str = ""
-    vision_sha256: str = ""
-    preprocessing: str = "openpi_jax_float_resize_v1"
-
-    def __post_init__(self):
-        if self.schema_version != 1:
-            raise ValueError("Unsupported memory schema_version.")
-        for name in ("budget", "max_frames"):
-            if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
-                raise ValueError(f"memory.{name} must be a positive integer.")
-        if self.window_frames is not None and (
-            type(self.window_frames) is not int or self.window_frames <= 0
-        ):
-            raise ValueError("memory.window_frames must be null or a positive integer.")
-        if (self.tokens_per_image, self.image_dim, self.position_dim, self.token_dim) != (
-            16,
-            2048,
-            768,
-            1024,
-        ):
-            raise ValueError(
-                "FrameSample v1 requires 16 tokens, image=2048, position=768, token=1024."
-            )
-        if self.budget % self.tokens_per_image:
-            raise ValueError("memory.budget must be divisible by tokens_per_image.")
-        if not self.camera or self.preprocessing != "openpi_jax_float_resize_v1":
-            raise ValueError("Specify a memory camera and the supported preprocessing recipe.")
-        if self.vision_sha256 and (
-            len(self.vision_sha256) != 64
-            or any(c not in "0123456789abcdef" for c in self.vision_sha256)
-        ):
-            raise ValueError("memory.vision_sha256 must be a SHA256 content digest.")
-
-    @classmethod
-    def from_dict(cls, value):
-        unknown = set(value) - {f.name for f in fields(cls)}
-        if unknown:
-            raise ValueError(f"Unknown memory configuration fields: {sorted(unknown)}")
-        return cls(**dict(value))
-
-    @property
-    def sampled_frames(self):
-        return self.budget // self.tokens_per_image
 
 
 def resolve_config(config, *, mode):
