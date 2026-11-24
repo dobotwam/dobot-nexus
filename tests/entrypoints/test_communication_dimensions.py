@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import asyncio
+import os
 import socket
 import unittest
 from types import SimpleNamespace
@@ -12,7 +12,8 @@ import numpy as np
 from dobot_nexus.core.contracts import PolicySpec
 from dobot_nexus.inference.transport.websocket import WebsocketPolicyServer
 from dobot_nexus.models.pi05.deploy import server as deployment
-from examples.real_robot.dobot_dual_arm_14d._runtime import memory, dobot_dual_arm_14d as bridge
+from examples.real_robot.dobot_dual_arm_14d._runtime import dobot_dual_arm_14d as bridge
+from examples.real_robot.dobot_dual_arm_14d._runtime import memory
 from examples.real_robot.dobot_dual_arm_14d._runtime.dimensions import CommunicationSpec
 
 
@@ -57,7 +58,8 @@ class CommunicationDimensionsTest(unittest.TestCase):
         CommunicationSpec(14, 14).validate_robot({"protocol": bridge.PROTOCOL_VERSION})
         CommunicationSpec(18, 7).validate_robot({"state_dim": 18, "action_dim": 7})
         for hello in ({}, {"state_dim": 18, "action_dim": 14}):
-            with self.subTest(hello=hello), self.assertRaisesRegex(ValueError, "do not match policy"):
+            with (self.subTest(hello=hello),
+                  self.assertRaisesRegex(ValueError, "do not match policy")):
                 CommunicationSpec(18, 18).validate_robot(hello)
         runtime = object.__new__(bridge.RobotRuntimeEnv)
         self.assertEqual(runtime.communication_spec["state_dim"], 14)
@@ -69,7 +71,8 @@ class CommunicationDimensionsTest(unittest.TestCase):
         result = bridge.build_openpi_obs(message, "pick", state_dim=18)
         np.testing.assert_array_equal(result["state"], message["state"])
         for state in (np.zeros(14), np.zeros((1, 18)), np.full(18, np.nan)):
-            with self.subTest(shape=state.shape), self.assertRaisesRegex(ValueError, "finite state"):
+            with (self.subTest(shape=state.shape),
+                  self.assertRaisesRegex(ValueError, "finite state")):
                 bridge.build_openpi_obs({**message, "state": state}, "pick", state_dim=18)
             with self.assertRaises(ValueError):
                 CommunicationSpec(18, 18).validate_state(state)
@@ -87,12 +90,14 @@ class CommunicationDimensionsTest(unittest.TestCase):
         policy = mock.Mock()
         policy.get_server_metadata.return_value = {"state_dim": 18, "action_dim": 18}
         with (
-            mock.patch("dobot_nexus.inference.transport.client.WebsocketPolicyClient", return_value=policy),
+            mock.patch("dobot_nexus.inference.transport.client.WebsocketPolicyClient",
+                       return_value=policy),
             mock.patch.object(bridge, "ClientHealthServer"),
             mock.patch.object(bridge, "warmup_openpi_policy"),
             mock.patch.object(bridge.socket, "create_connection"),
             mock.patch.object(bridge, "authenticate", side_effect=lambda s, **kw: s),
-            mock.patch.object(bridge, "recv_message", return_value={"protocol": bridge.PROTOCOL_VERSION}),
+            mock.patch.object(bridge, "recv_message",
+                              return_value={"protocol": bridge.PROTOCOL_VERSION}),
             mock.patch.object(bridge, "send_message") as send,
         ):
             with self.assertRaisesRegex(ValueError, "do not match policy"):
@@ -103,6 +108,7 @@ class CommunicationDimensionsTest(unittest.TestCase):
 
     def test_memory_warmup_and_dense_inference_use_custom_dimensions(self):
         policy = mock.Mock()
+        policy.get_server_metadata.return_value = {"history_camera": "base"}
         policy.infer.side_effect = [{"actions": np.zeros((5, 18))}, {"reset_finished": True}]
         memory.MemoryBridge.warmup(policy, "pick", use_history=True, state_dim=18)
         self.assertEqual(policy.infer.call_args_list[0].args[0]["state"].shape, (18,))
