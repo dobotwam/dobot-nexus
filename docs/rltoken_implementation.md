@@ -1,7 +1,7 @@
 # RLToken 开发与模块验证
 
-双残差 TD3、Token-only、离线缓存/分阶段预训练和回合定稿的当前入口，见
-[双残差配方](rltoken_dobot_recipe.md)。下文的 `rlt_ac_fixed_v1` / `rlt_ac_terminal_v2`
+残差 TD3（`rlt_td3_residual_v1`）、Token-only、离线缓存/单阶段联合预热和回合定稿的当前入口，见
+[残差 TD3 配方](rltoken_td3_recipe.md)。下文的 `rlt_ac_fixed_v1` / `rlt_ac_terminal_v2`
 按各自显式配置使用；不同 recipe 的恢复状态不可互换。
 
 当前实现的职责划分：`algorithms/rltoken/`
@@ -146,7 +146,7 @@ examples/train.sh --config examples/configs/rltoken/stage2.yaml --gpus 0,1
 `algorithm.policy_switch.execution_scope` 控制执行范围，`training_scope` 控制训练范围，
 均支持 `all` 与 `critical_phase`，默认 `all`。启用全任务关键阶段控制时，环境观测须
 携带 `control.rlt_switch_flags: bool[B]`；就绪与阶段门控独立，关键阶段的 VLA 预热数据
-仍可入库。完整配置、适配器职责和边界语义见[双残差配方](rltoken_dobot_recipe.md#执行阶段与训练范围)。
+仍可入库。完整配置、适配器职责和边界语义见[残差 TD3 配方](rltoken_td3_recipe.md#执行阶段与训练范围policy_switch)。
 GPU 空闲不会增加 UTD。每个唯一、最终准入的
 transition 增加整数更新预算；成功 critic 更新扣除预算。默认 `rlt_ac_fixed_v1`
 拒绝未完整执行的块；`rlt_ac_terminal_v2` 的终止前缀规则见下文“仿真批量采集”。

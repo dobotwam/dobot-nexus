@@ -28,31 +28,49 @@ Nexus independently implements per-observation routing and replay eligibility;
 task predicates, keyboard handling, phase latching and episode resets remain in
 the environment adapter. No RLinf environment code is vendored by this feature.
 
-## Dobot residual TD3 recipe
+## RLT-in-Practice pre-clip residual TD3 recipe
 
-`rlt_td3_dual_residual_v1` implements the Explicit Residual-Q architecture and
-strict Base freezing described by experiment 18 in the locally supplied
-Dobot-RLT project. These Nexus modules are independently implemented; no Dobot
-source is vendored or imported by production code or repository tests. The
-inspected reference tree contains no LICENSE/NOTICE file; this notice does not
-assign an upstream license. Original source attribution is retained here.
+`rlt_td3_residual_v1` implements the pre-clip bounded residual TD3 recipe,
+legal known-success behavior anchoring, dynamic Q/BC weight schedule,
+single-stage joint offline prewarm, `position_bottleneck` Token decoder mode,
+and opt-in experimental switches (same-sample latent residual actor, Q-gated
+success anchor, Critic hidden LayerNorm with bootstrap-only target Q clipping,
+Sigmoid/BCE Twin-Q, and optional Terminal RankQ) described in the locally
+inspected `RLT-in-Practice` research repository.
 
-Reference snapshot inspected on 2026-10-28, SHA-256:
+These Nexus modules are independently implemented; no `RLT-in-Practice` source
+is vendored or imported by production code or repository tests. Checkpoint
+parameter names are not interchangeable. Nexus retains its own feature/codec
+contracts, durable SQLite Replay admission and recovery format
+(`rltoken_td3_resume_v3`), explicit prewarm handoff checks (`rltoken_prewarm_v2`),
+and three-role RLinf execution boundary. See `docs/rltoken_td3_recipe.md` for
+the full specification.
+
+Reference snapshot inspected on 2026-11-24, SHA-256:
 
 | Reference file | SHA-256 |
 |---|---|
-| `rlt/networks.py` | `17057a287817dba52b0c609c2f3965b4bba67a13a4e19fcf800fab55758dd397` |
-| `rlt/td3.py` | `8baa38daa557767a35aa4cbe86de6be30e5073ef9380c0499e413cf523ed9693` |
-| `rlt/offline.py` | `92eb36c84c3e2c0c9b47b126f55a9a062a3d6691a001f2131a82c0f2b80a4daa` |
-| `rlt/replay.py` | `fbb6dbe6405e483b26cce99cbe8dfb197cbeb537db32370132fa8b4aebab65b8` |
-| `scripts/pretrain_td3.py` | `e21f05d978220de35fe966185e2d1ea9095fe19ce81a26b1ac651b9930faf3e4` |
-| `scripts/rlt_online_session.py` | `7e02add0dd2e9fe6f8130dc59dc377632a7416ab175ad98d73dc866ae30d2f18` |
-| `docs/05_DualResidual实验.md` | `d13ff59938c34eeeefd13de0a94af0309049cca9fd8cec0ecfcdd28c1d9ad518` |
+| `research/rlt/preclip_bc_objectives.py` | `64c84da868bb1387a2987f9e6a12ca89ffaad8d3d2b814dabdc66e94a3459af4` |
+| `research/rlt/preclip_residual_policy.py` | `688e84dc9b82c757867f444eb15340c96da3ccab2dcaa6f46f72f1dd72eed6bc` |
+| `research/rlt/preclip_bc_workers.py` | `d2aa88bb69808e333b3fb0871067f3fbfb124ef69297bac4d62f06c46a2a8ee3` |
+| `research/rlt/native_residual_anchor.py` | `bc2429c3f713a2ef2dfd8d5321403cb576c3388b1f6484936e20e02ce2515b64` |
+| `research/rlt/single_sample_latent_policy.py` | `31256f127ae5d039a5818a3464ad944379e04fdfb065cde2f2fe544090f6b64e` |
+| `research/rlt/latent_residual_policy.py` | `61d539525147bf3da1788532002cddf88ed2252af2fee48d00cced16c14fe534` |
+| `research/rlt/latent_q_gated_anchor_worker.py` | `ebbfdc19bbaf8f5656f60aac43172e95b95e0591fd62e0912e62d217c33b0a0d` |
+| `research/rlt/latent_sigmoid_bce.py` | `983659d0722437b170edacf1fdabfc5df41d91277ff6c39e54a48441919f00a0` |
+| `research/rlt/success_anchor_td3_worker.py` | `30877cc6bbd1e5f52ee2affcd5e6be57f1b57df229a99c0db3384235e17b3597` |
+| `research/rlt/actors/bounded_residual.py` | `22e3d9300b86035bc21e15922d65108dcc1a9d0180f36bedf6e52c1de95c8721` |
+| `research/rlt/actors/latent_residual.py` | `f84480fef8b11fd8fed2ec265a6f769cb9595343c3199fdafbe0207c3e2f22d1` |
+| `research/rlt/losses/success_behavior_anchor.py` | `c6329b30edd8161b788221b0cd347738f8e61aa24812fd17acf5b492f8bfd691` |
+| `research/rlt/losses/q_gated_success_anchor.py` | `27d2598e5ad4d3100ea7d3fc9a7b5086348fb82cde06786dc8fcc73c1e4fea54` |
+| `research/rlt/losses/terminal_rankq.py` | `d479f7c5b887bd713a7584815c4d6eee4da1688f8f67967f223ed577824c030b` |
+| `research/rlt/critics/ln_target_clip.py` | `8dfc16c13d93a4b8421627df2ad2281f0eff1105f1e447bc22ebd551fdbc0bb0` |
+| `research/rlt/representation/selectable_decoder.py` | `fd36dd81fd4c2ba0d8e26c825fa139030b46173674a2f183500ffad4eb042d9a` |
+| `research/rlt/replay/episode_outcome_index.py` | `eef175be227e3ad3adaa4769b20f913d4e8a5e3daefb0ff33f305d6f7976984b` |
+| `.bootstrap/rlinf-v0.4/rlinf/models/embodiment/mlp_policy/rlt_td3_mlp_policy.py` | `8860ba244c8f1253ec0965878e2d6214075d6f7cd71e118ab91014f5aa353ee0` |
+| `.bootstrap/rlinf-v0.4/rlinf/models/embodiment/modules/rlt_token_transformer.py` | `d72364f58436af345164d9bb574d7f7edf054e5c9d1e94d367ae075b53779332` |
+| `.bootstrap/rlinf-v0.4/rlinf/workers/actor/fsdp_rlt_td3_policy_worker.py` | `8030aa840b5d869c90417a442423ac7fc8b832d82c5e73701cfa0bc8398b4c08` |
 
-The reference path is `/share/lujunyu/Dobot-RLT`. Checkpoint parameter names
-are not interchangeable. Nexus defines per-axis codec bounds, separate raw
-execution/supervision records, pure-VLA Base bootstrap, explicit acceptance
-gates, and durable replay budgeting. These choices are specified in
-`docs/rltoken_dobot_recipe.md`; a changed task/codec is a separate experiment.
-The reference's experiment-18 robot result is still pending in its experiment
-notes. Neither architecture agreement nor CPU parity establishes task benefit.
+CPU contract tests verify structural, gradient, and lifecycle semantics only;
+GPU training throughput and real-robot/simulation task performance require
+independent environment evaluation.

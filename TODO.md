@@ -20,11 +20,13 @@
 重新标成“未实现”。归属遵循 [AGENTS.md](AGENTS.md)：算法状态与执行适配归
 `algorithms/rltoken/`，Pi0.5 集成归 `models/pi05/rltoken/`，可复用计算才进入 `modules/`。
 
-### Dobot 对齐实施状态
+### RLT-in-Practice 残差 TD3 实施状态
 
-双残差配方、冻结 Token、离线缓存/四阶段训练和在线回合定稿已接入，运行说明见
-[双残差配方](docs/rltoken_dobot_recipe.md)。下列实现条目已完成代码接入；
-`RLT-DOBOT-VALIDATION` 的训练收益与真机/分布式验收仍独立保留。
+`rlt_td3_residual_v1`（pre-clip 残差 Actor、标准 Twin-Q、合法成功行为锚定、动态 Q/BC
+权重调度、单阶段联合预热、`position_bottleneck` Token 及四项可选实验开关）已接入，
+运行说明见 [残差 TD3 配方](docs/rltoken_td3_recipe.md)。旧版 Dobot 双残差配方已由
+`rlt_td3_residual_v1` 替代；`RLT-TD3-VALIDATION` 的 GPU 数值、分布式与任务收益验收
+仍独立保留。
 
 ### 实现与验收清单
 
@@ -161,25 +163,16 @@
 
   CPU 验收覆盖混合阶段批量路由、重置、预热、缓存筛选、TD bootstrap、迟到标签、
   journal 恢复与部署配置。真实任务触发条件与训练收益在下项进行环境验收。
-  入口：`algorithms/rltoken/routing.py`、[阶段配置](docs/rltoken_dobot_recipe.md#执行阶段与训练范围)。
+  入口：`algorithms/rltoken/routing.py`、[阶段配置](docs/rltoken_td3_recipe.md#执行阶段与训练范围policy_switch)。
 
-- [ ] **RLT-DOBOT-VALIDATION：逐层验证对齐与任务收益**
+- [ ] **RLT-TD3-VALIDATION：逐层验证对齐与任务收益**
 
-  实施顺序：recipe/数据契约 → Residual Actor/TD3 → 双残差 Critic/离线阶段 → 在线
-  定稿与恢复部署；Token-only 可独立完成，完整对齐验收使用其新特征资产。早期算法
-  消融可固定现有 provider，但不得将该结果标为完整 Dobot-RLT 配方复现。
-
-  CPU 模块/契约测试覆盖动作隔离、target/冻结、阶段更新、预算去重与恢复。上游数值
-  对照使用相同权重、输入和噪声，比较 forward、TD target、loss、梯度和一次优化更新；
-  参考脚本、数值/GPU 报告和训练评测均位于 Git 忽略的 local_script，src/tests 不导入
-  对比项目。接入时完成仓库 unittest 与 compileall 检查。
-
-  已完成固定权重 CPU 核心数值对照；辅助项和真实执行的任务评测仍需独立验收。
-  任务评测按 reference 透传 → 小 Actor 纯 BC → 冻结 Actor 训练 Critic → 少量联合
-  更新 → 在线微调逐段执行。固定场景、种子、控制周期和 reference 采样，分别报告成功率、
-  配对成败、动作偏离、Q 排序/梯度、残差饱和和实际 UTD；模块对齐通过不代表任务收益。
+  `rlt_td3_residual_v1` 已完成模块重构、对抗评审与 CPU 契约测试（涵盖 pre-clip BC、
+  合法成功锚定、单阶段联合预热接续、四项实验开关与 `position_bottleneck` Token）。
+  GPU 数值对照、多卡 Ray 闭环与真机/仿真任务成功率评测仍需独立验收；参考脚本与报告
+  保留在 Git 忽略的 `local_script/`，不进入 `src/` 或 `tests/`。
   入口：`tests/algorithms/rltoken/`、`tests/models/pi05/rltoken/`、
-  `docs/rltoken_implementation.md`、`docs/maniskill_evaluation_plan.md`。
+  `docs/rltoken_td3_recipe.md`、`docs/maniskill_evaluation_plan.md`。
 
 - [ ] **RLT-REWARD：打通延迟奖励和审核定稿链路**
 
