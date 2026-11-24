@@ -8,6 +8,7 @@ from typing import Any
 import torch
 
 from dobot_nexus.core.artifacts import ArtifactManager, resume_fingerprint
+from dobot_nexus.core.config import Config
 from dobot_nexus.core.contracts import TrainOutput, TrainResult
 from dobot_nexus.core.experiment import Experiment
 from dobot_nexus.core.import_utils import build_model
@@ -132,6 +133,12 @@ class BCTrainer:
         rank_seed = training_seed(base_seed, self.runtime.process_index)
         # Set the global RNG state to the base seed before building the model and dataloader.
         seed_all(base_seed)
+        resume_from = config.train.get("resume_from")
+        last_checkpoint = None
+        if resume_from:
+            # Model validation and DCP restoration must see the same checkpoint if "auto" moves.
+            last_checkpoint = resolve_resume_checkpoint(self.experiment.run_dir, resume_from)
+            config = Config(config, train=Config(config.train, resume_from=str(last_checkpoint)))
         model = build_model(config, mode="train")
         data_loader = model.build_train_dataloader(config)
         seed_dataloader(data_loader, base_seed)
@@ -168,10 +175,7 @@ class BCTrainer:
         epoch_generator_states = data_rng_state(data_loader)
         epoch_rng_state = capture_rng_state()
         last_metrics: dict[str, float] = {}
-        last_checkpoint = None
-        resume_from = config.train.get("resume_from")
-        if resume_from:
-            last_checkpoint = resolve_resume_checkpoint(self.experiment.run_dir, resume_from)
+        if last_checkpoint is not None:
             restored = self.runtime.load_training_state(
                 model=model,
                 optimizer=optimizer,

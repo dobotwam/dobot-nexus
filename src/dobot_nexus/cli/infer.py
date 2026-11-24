@@ -18,20 +18,24 @@ def _load_observation(path: str | Path) -> ObservationBatch:
     if source.suffix == ".json":
         return observation_from_json(json.loads(source.read_text(encoding="utf-8")))
     if source.suffix == ".npz":
-        payload = np.load(source, allow_pickle=False)
-        images = {
-            key.removeprefix("image."): payload[key]
-            for key in payload.files
-            if key.startswith("image.")
-        }
-        prompt = payload["prompt"].tolist()
-        return ObservationBatch.from_value(
-            {"images": images, "state": payload["state"], "prompt": prompt}
-        )
+        with np.load(source, allow_pickle=False) as payload:
+            images = {
+                key.removeprefix("image."): payload[key]
+                for key in payload.files
+                if key.startswith("image.")
+            }
+            return ObservationBatch.from_value(
+                {
+                    "images": images,
+                    "state": payload["state"],
+                    "prompt": payload["prompt"].tolist(),
+                    "env_ids": payload["env_ids"].tolist() if "env_ids" in payload else None,
+                }
+            )
     raise ValueError("Inference input must be .json or .npz.")
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def run_inference(argv: Sequence[str] | None, *, load_predictor) -> None:
     parser = argparse.ArgumentParser(description="Run standardized action-chunk inference.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--input", required=True, help="Observation .json or .npz file.")
@@ -39,11 +43,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("overrides", nargs="*")
     args = parser.parse_args(argv)
     config = load_config(args.config, list(args.overrides), expected_task="infer")
-    policy = load_policy(config)
+    policy = load_predictor(config)
     observation = _load_observation(args.input)
     output = policy.predict_chunk(
         observation,
-        SamplingOptions(
+        options=SamplingOptions(
             seed=config.get("inference", {}).get("seed"),
             num_steps=config.get("inference", {}).get("num_steps"),
         ),
@@ -54,6 +58,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         valid_mask=(output.valid_mask if output.valid_mask is not None else np.array([])),
     )
     print(json.dumps({"output": str(Path(args.output).resolve()), "shape": output.actions.shape}))
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    run_inference(argv, load_predictor=load_policy)
 
 
 if __name__ == "__main__":

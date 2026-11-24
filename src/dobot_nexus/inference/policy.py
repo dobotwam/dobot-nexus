@@ -30,13 +30,15 @@ class InferencePolicy:
         artifact = self.config.model.get("artifact")
         if artifact:
             self.artifact_dir = resolve_artifact(str(artifact))
+            self.config.model.artifact = str(self.artifact_dir)
             self.manifest = load_manifest(self.artifact_dir)
             training_config = load_config(
                 self.artifact_dir / "config_resolved.yaml", expected_task="train"
             )
             manifest_model = self.manifest.get("model", {})
-            if manifest_model.get("target"):
-                self.config.model.target = str(manifest_model["target"])
+            if manifest_model.get("target") != training_config.model.target:
+                raise ValueError("Artifact model.target disagrees with its saved configuration.")
+            self.config.model.target = training_config.model.target
             for key in ("state_dim", "action_dim", "action_horizon"):
                 configured = self.config.model.get(key)
                 trained = training_config.model[key]
