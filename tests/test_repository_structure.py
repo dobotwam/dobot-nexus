@@ -45,7 +45,7 @@ class RepositoryStructureTest(unittest.TestCase):
             for path in root.rglob("*")
             if path.is_file() and path.suffix in {".md", ".py", ".sh", ".yaml", ".yml"}
         ]
-        paths.append(ROOT / "README.md")
+        paths.extend([ROOT / "README.md", ROOT / "README_zh.md"])
         content = "\n".join(path.read_text(encoding="utf-8") for path in paths)
         for prefix in ("/data/trainer/", "/share/models/", "/share/datasets/"):
             self.assertNotIn(prefix, content)

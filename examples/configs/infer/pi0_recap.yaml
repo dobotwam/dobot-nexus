@@ -1,0 +1,13 @@
+extends: pi0.yaml
+exp:
+  name: pi0_recap_infer
+model:
+  target: dobot_nexus.models.pi0.modeling_recap:Pi0ReCapModel
+  artifact: ${env:RECAP_ARTIFACT,runs/pi0_recap/checkpoints/latest_deployment.txt}
+  state_dim: null
+  action_dim: null
+  action_horizon: null
+inference:
+  execute_steps: 8
+  recap:
+    condition: base

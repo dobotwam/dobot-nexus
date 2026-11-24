@@ -202,7 +202,7 @@ class ModelTest(unittest.TestCase):
                 )
                 try:
                     saved_path.write_text(yaml.safe_dump(saved))
-                    with self.assertRaisesRegex(ValueError, "not a RECAP policy Artifact"):
+                    with self.assertRaisesRegex(ValueError, "model.target disagrees"):
                         InferencePolicy(infer)
                 finally:
                     saved_path.write_text(saved_text)

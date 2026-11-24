@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .utils import _str_to_dtype
+from .dtypes import _str_to_dtype
 
 
 def posemb_sincos_2d(
@@ -49,6 +49,7 @@ class MlpBlock(nn.Module):
     def __init__(self, dim: int, mlp_dim: int | None = None, dropout: float = 0.0):
         super().__init__()
         mlp_dim = mlp_dim or 4 * dim
+        self.gelu_approximate = "none"
         self.fc1 = nn.Linear(dim, mlp_dim)
         self.fc2 = nn.Linear(mlp_dim, dim)
         self.dropout = nn.Dropout(dropout)
@@ -60,7 +61,7 @@ class MlpBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.fc1(x)
-        x = F.gelu(x)
+        x = F.gelu(x, approximate=self.gelu_approximate)
         x = self.dropout(x)
         x = self.fc2(x)
         return x

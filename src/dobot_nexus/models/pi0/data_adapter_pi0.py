@@ -12,6 +12,19 @@ from dobot_nexus.models.pi0.configuration_pi0 import Pi0Config
 from dobot_nexus.models.pi0.data import EncodedObservation, Pi0Pipeline
 
 
+def _move_model_kwargs(value: Any, device: torch.device) -> Any:
+    """Move extension tensors while retaining the argument tree and scalar values."""
+    if isinstance(value, torch.Tensor):
+        return value.to(device, non_blocking=True)
+    if isinstance(value, dict):
+        return {key: _move_model_kwargs(item, device) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_move_model_kwargs(item, device) for item in value)
+    if isinstance(value, list):
+        return [_move_model_kwargs(item, device) for item in value]
+    return value
+
+
 def _move_observation(observation: Any, device: torch.device) -> Any:
     def move(value: Any) -> Any:
         return value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value
@@ -70,7 +83,9 @@ class Pi0DataAdapter(BaseDataAdapter):
 
     def move_encoded(self, value: EncodedObservation, device: torch.device) -> EncodedObservation:
         return EncodedObservation(
-            observation=_move_observation(value.observation, device), raw_state=value.raw_state
+            observation=_move_observation(value.observation, device),
+            raw_state=value.raw_state,
+            model_kwargs=_move_model_kwargs(getattr(value, "model_kwargs", {}), device),
         )
 
     def decode_actions(
