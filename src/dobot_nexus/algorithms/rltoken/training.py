@@ -6,10 +6,13 @@ import json
 import math
 import time
 import uuid
+from functools import partial
 from pathlib import Path
 
 from dobot_nexus.core.config import to_plain_dict
 from dobot_nexus.core.contracts import TrainResult
+from dobot_nexus.runtime.factory import create_runtime
+from dobot_nexus.runtime.sync import SingleInFlightSyncCoordinator
 
 from .artifacts import feature_metadata
 from .batching import environment_batch_size
@@ -22,6 +25,8 @@ from .configuration import (
 )
 from .identity import content_digest
 from .routing import PolicySwitch
+from .topology import build_rltoken_topology
+from .weight_sync import ActorVersion
 
 
 def validate_training(config):
@@ -103,7 +108,8 @@ def validate_training(config):
 
 
 class RLTokenTrainer:
-    def __init__(self, config, experiment):
+    def __init__(self, config, experiment, *, runtime_factory=None):
+        self.runtime_factory = runtime_factory
         self.config, self.experiment = config, experiment
         self.heads, self.learning = validate_training(config)
         self.resume_path = self._resume_path()
@@ -159,34 +165,62 @@ class RLTokenTrainer:
         return path
 
     def run(self):
-        try:
-            from .execution_rlinf import RLinfExecution
-        except ImportError as exc:
-            raise ImportError(
-                "RLToken execution requires the pinned RLinf scheduler and its dependencies. "
-                "Install algorithms/rltoken/requirements-rlinf.txt; "
-                "BC and deployment do not require RLinf."
-            ) from exc
-        execution = RLinfExecution(
+        topology = build_rltoken_topology(
             self.config,
-            self.experiment.logger,
-            self.run_id,
-            self.epoch,
-            self.task_fingerprint,
-            self.resume_path,
+            run_id=self.run_id,
+            epoch=self.epoch,
+            task_fingerprint=self.task_fingerprint,
+            resume_path=self.resume_path,
         )
+        runtime = (self.runtime_factory or create_runtime)(self.config, self.experiment.logger)
+        session = runtime.start(topology)
         try:
-            return self._coordinate(execution)
+            learner, rollout = session.role("learner"), session.role("rollout")
+            status = session.init_results["learner"]
+            if self.learning.td3 is not None and self.resume_path:
+                rng = learner.call("rollout_rng").wait()
+                rollout.call("restore_rng", rng).wait()
+            if self.config.environment.reward_mode == "episode":
+                pending = learner.call("pending").wait()
+                session.role("env").call("restore_pending", pending).wait()
+            sync = SingleInFlightSyncCoordinator()
+            self._sync_weights(session, sync, status)
+            return self._coordinate(session, sync, status)
         finally:
-            execution.close()
+            session.close()
 
-    def _coordinate(self, execution):
-        status = execution.start()
+    def _sync_weights(self, session, sync, status, *, blocking=True):
+        recv = partial(session.role("rollout").call, "request_actor_sync_model")
+        send = partial(session.role("learner").call, "sync_model_to_rollout")
+        expected = ActorVersion(
+            self.run_id, self.epoch, status.get("actor_revision", status["actor_updates"])
+        )
+
+        def validate(received, sent):
+            if received != expected or sent != expected:
+                raise ValueError("Synchronized Actor version mismatch.")
+
+        if blocking:
+            sync.sync_blocking(recv, send, validator=validate)
+            return expected
+        sync.sync_async(recv, send, validator=validate)
+
+    def _ready(self, status, applied):
+        minimum = self.config.environment.min_actor_updates
+        if status.get("pretrained_ready") and applied >= status["ready_revision"]:
+            return True
+        return (
+            status["admitted"] >= self.learning.warmup
+            and status["actor_updates"] >= minimum
+            and applied >= minimum
+        )
+
+    def _coordinate(self, session, sync, status):
+        learner, rollout, env = (session.role(name) for name in ("learner", "rollout", "env"))
         config = self.config
         handles = {}
-        starts = {}
         env_status = {"chunks": 0, "env_steps": 0}
-        applied = execution.applied_actor_update
+        applied = sync.last_result[0].actor_update
         next_save = (
             status["critic_updates"] // config.train.save_every + 1
         ) * config.train.save_every
@@ -199,25 +233,14 @@ class RLTokenTrainer:
         episode_status_pending = False
         drain_on_stop = config.environment.get("drain_on_stop", False)
 
-        def launch(name, handle):
-            if name in handles:
-                raise RuntimeError(f"Duplicate in-flight {name} call.")
-            handles[name], starts[name] = handle, time.monotonic()
-
         while True:
-            for name, handle in list(handles.items()):
-                if time.monotonic() - starts[name] > config.runtime.get("rpc_timeout", 120):
-                    raise TimeoutError(f"RLToken {name} exceeded its RPC deadline.")
-                if not handle.done():
-                    continue
-                result = execution.wait(handle)
+            for name, result in session.wait_any(handles):
                 del handles[name]
-                del starts[name]
                 if name == "learn":
                     status = result
                     episode_status_pending = False
                     if result["updates"]:
-                        execution.update_rollout_weights(no_wait=True)
+                        self._sync_weights(session, sync, status, blocking=False)
                 elif name == "rollout":
                     applied = result["applied_actor_update"]
                 else:
@@ -230,38 +253,40 @@ class RLTokenTrainer:
                             "Robot execution requires reconciliation; "
                             "the record was durably journaled."
                         )
+            sync.poll()
             collection_done = env_status["chunks"] >= config.environment.max_chunks
-            can_update = status["budget"] > 0 and status.get("replay_size", status["admitted"]) >= self.learning.warmup
+            can_update = (
+                status["budget"] > 0
+                and status.get("replay_size", status["admitted"]) >= self.learning.warmup
+            )
             if draining_episode and not can_update and not episode_status_pending:
                 draining_episode = False
-            stop = (status["critic_updates"] >= config.train.max_steps or
-                    (collection_done and (not drain_on_stop or (not can_update and not episode_status_pending))))
-            pause = pause or stop or status["critic_updates"] >= next_save
-            pretrained = status.get("pretrained_ready", False)
-            revision = status.get("ready_revision", status["actor_updates"])
-            ready = (pretrained and applied >= revision) or (
-                status["admitted"] >= self.learning.warmup
-                and status["actor_updates"] >= config.environment.min_actor_updates
-                and applied >= config.environment.min_actor_updates
+            stop = status["critic_updates"] >= config.train.max_steps or (
+                collection_done
+                and (not drain_on_stop or (not can_update and not episode_status_pending))
             )
+            pause = pause or stop or status["critic_updates"] >= next_save
+            ready = self._ready(status, applied)
             if pause and not handles:
-                execution.finish_sync()
-                execution.update_rollout_weights(no_wait=False)
-                applied = execution.applied_actor_update
+                sync.drain()
+                version = self._sync_weights(session, sync, status)
+                applied = version.actor_update
                 if self.learning.td3 is not None:
-                    rollout_rng = execution.wait(execution.rollout.rng_state())
-                    checkpoint = execution.wait(execution.actor.snapshot(rollout_rng=rollout_rng))
+                    rollout_rng = rollout.call("rng_state").wait()
+                    checkpoint = learner.call("snapshot", rollout_rng=rollout_rng).wait()
                 else:
-                    checkpoint = execution.wait(execution.actor.snapshot())
-                if (
-                    (pretrained and applied >= revision) or
-                    (status["admitted"] >= self.learning.warmup
-                     and applied >= config.environment.min_actor_updates)
-                ):
+                    checkpoint = learner.call("snapshot").wait()
+                ready = self._ready(status, applied)
+                if ready:
                     root = self.experiment.run_dir / "rltoken"
                     destination = root / "deployments" / f"actor-{applied}-{uuid.uuid4().hex[:8]}"
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    execution.wait(execution.rollout.export_deployment(str(destination)))
+                    exported = rollout.call("export_deployment", str(destination)).wait()
+                    exported_version = ActorVersion(
+                        exported["run_id"], exported["learner_epoch"], exported["actor_update"]
+                    )
+                    if exported_version != version or exported["path"] != str(destination):
+                        raise ValueError("Deployment differs from the final Actor version or path.")
                     from .checkpoint import _fsync, _sync_dir
 
                     pointer = root / (".latest-deployment-" + uuid.uuid4().hex)
@@ -282,15 +307,16 @@ class RLTokenTrainer:
                 pause = False
             # During a checkpoint barrier, keep servicing the last chunk until its durable ACK.
             if not pause and not collection_done and not draining_episode and "env" not in handles:
-                launch("env", execution.env.collect_chunk(actor_ready=ready))
+                handles["env"] = env.call("collect_chunk", actor_ready=ready)
             if (not pause or "env" in handles) and "rollout" not in handles:
-                launch("rollout", execution.rollout.serve_slice())
+                handles["rollout"] = rollout.call("serve_slice")
             if (not pause or "env" in handles) and "learn" not in handles:
                 remaining = max(0, config.train.max_steps - status["critic_updates"])
-                launch(
-                    "learn", execution.actor.update(max_updates=0 if pause or
-                        (episode_updates and not draining_episode and not collection_done)
-                        else min(1, remaining))
+                collect_only = pause or (
+                    episode_updates and not draining_episode and not collection_done
+                )
+                handles["learn"] = learner.call(
+                    "update", max_updates=0 if collect_only else min(1, remaining)
                 )
             if time.monotonic() - last_log > 10:
                 self.experiment.logger.info(
