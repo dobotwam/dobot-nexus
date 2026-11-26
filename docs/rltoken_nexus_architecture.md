@@ -13,10 +13,11 @@ flowchart TB
     CLI --> TRAIN[RLTokenTrainer / Stage 2]
     BC --> PI[models/pi05/rltoken]
     PI --> TOKEN[algorithms/rltoken/token.py]
-    TRAIN --> EXEC[execution_rlinf.py / workers_rlinf.py]
-    EXEC --> ENV[EnvSession / SimulationSession]
-    EXEC --> ROLL[RolloutEngine]
-    EXEC --> LEARN[Learner / Replay]
+    TRAIN --> TOP[algorithms/rltoken/topology.py & roles.py]
+    TOP --> RT[runtime/contracts & runtime/ray 延迟加载]
+    RT --> ENV[EnvSession / SimulationSession]
+    RT --> ROLL[RolloutEngine]
+    RT --> LEARN[Learner / Replay]
     ROLL --> POLICY[RLTokenPolicy]
     POLICY --> API[model.target / Artifact / 可选特征能力]
     API --> PI
@@ -49,8 +50,9 @@ Replay、优化器或 Worker；RLToken Token/Actor/Critic 当前属于算法包�
 | `algorithms/rltoken/policy.py`、`artifacts.py`、`identity.py` | 组合策略、冻结资产、公开部署 Artifact 和内容摘要 |
 | `algorithms/rltoken/env.py`、`simulation.py`、`batching.py` | 单环境/向量环境采集与观测组装 |
 | `algorithms/rltoken/rollout.py`、`weight_sync.py` | 特征缓存、Actor 推理、快照与请求边界切换 |
-| `algorithms/rltoken/training.py` | 唯一 Stage 2 协调者，驱动有限 RPC、保存和停止 |
-| `algorithms/rltoken/execution_rlinf.py`、`workers_rlinf.py` | 可选 RLinf/Ray 导入、设备放置、消息收发、远程生命周期 |
+| `algorithms/rltoken/training.py` | 唯一 Stage 2 协调者，驱动有限 RPC、恢复握手、同步屏障、保存和停止 |
+| `algorithms/rltoken/topology.py`、`roles.py` | 纯 Python 拓扑声明与三角色业务壳（不继承 Worker，零 Ray/RLinf 依赖） |
+| `runtime/`、`runtime/ray/`、`runtime/local/` | 可选分布式运行时契约、固定版 RLinf+Ray 后端（延迟加载）及仅测试注入的进程内后端 |
 | `models/pi05/rltoken/modeling_stage1.py` | 联合训练、Stage 1 权重加载与导出 |
 | `models/pi05/rltoken/features.py`、`data_adapter.py` | prefix/KV 特征、模型数据适配及控制器 codec |
 
@@ -140,7 +142,7 @@ Learner 的 update RPC 先接收一条消息、持久提交并 ACK，再有限�
 
 Rollout 在整个请求内固定 Actor 版本。快照包含 run、learner epoch、更新计数、特征身份
 及摘要，校验后加载空闲槽位；CUDA 完成后切换，返回 applied ACK。
-首次同步阻塞完成后才开始采集；后续同步由 AsyncWeightSyncMixin 管理单个在途任务。
+首次同步阻塞完成后才开始采集；后续同步由 `runtime/sync.py` 的 `SingleInFlightSyncCoordinator` 管理单个在途收发对并校验完整 `ActorVersion`。
 Replay warmup、Actor 最少更新和对应版本应用均满足后，采集才由 reference 转向 Actor。
 
 向量仿真仍是一个 Env Worker：外部 adapter 提供 reset/execute_batch/query_batch/close，

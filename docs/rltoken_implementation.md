@@ -22,7 +22,7 @@ CPU 单元测试验证算法与协议；真实 Ray 进程、多 GPU 训练闭环
 | 公共训练入口 | `core/config.py`、`cli/train.py` 选择 Trainer；`algorithm: bc` 使用既有 BCTrainer，`algorithm.target` 加载算法 Trainer |
 | 算法计算与状态 | `algorithms/rltoken/` 拥有 Token、Actor/双 Q、loss、transition、Replay、Learner、checkpoint 和同步协议 |
 | 模型集成 | `models/pi05/rltoken/` 拥有 Stage 1 联合训练、冻结特征提取、Pi0.5 数据适配和控制器 codec；算法通过 target/Artifact 加载提供者 |
-| 算法执行适配 | `algorithms/rltoken/execution_rlinf.py`、`workers_rlinf.py` 隔离 RLinf/Ray；Worker 委托纯业务对象，由 `RLTokenTrainer.run()` 延迟加载 |
+| 分布式执行层 | `src/dobot_nexus/runtime/ray/` 隔离 RLinf/Ray；`algorithms/rltoken/{topology,roles}.py` 声明纯 Python 拓扑与角色并委托业务对象，由 `RLTokenTrainer.run()` 延迟加载 |
 | 公共部署入口 | `InferencePolicy` 加载 `RLTokenPolicy`，组合冻结提供者和 Actor；部署 Artifact 自带推理资产 |
 | 共享计算组件 | `modules/` 仅承载可复用计算；现有 `modules/value/` 服务 Fusion Value，RLToken Token/Actor/Critic 当前保留在算法包 |
 

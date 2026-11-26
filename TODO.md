@@ -151,7 +151,7 @@
   验收：重复/乱序定稿和恢复不会重复准入；部署只使用已同步完整版本；在线步数为零
   的合格离线 Actor 可启用；保存恢复和迁移 Artifact 后确定性动作一致。
   入口：`algorithms/rltoken/training.py`、`env.py`、`simulation.py`、`rollout.py`、
-  `workers_rlinf.py`、`weight_sync.py`、`checkpoint.py`、`policy.py`、`artifacts.py`。
+  `roles.py`、`topology.py`、`weight_sync.py`、`checkpoint.py`、`policy.py`、`artifacts.py`。
 
 - [x] **RLT-PHASE：独立控制执行阶段与训练数据范围**
 
@@ -184,7 +184,7 @@
   准入；未知记录和修改执行事实的定稿被拒绝。CPU 协议测试与外部奖励服务联调分别记录。
   入口：[env.py](src/dobot_nexus/algorithms/rltoken/env.py)、
   [simulation.py](src/dobot_nexus/algorithms/rltoken/simulation.py)、
-  [workers_rlinf.py](src/dobot_nexus/algorithms/rltoken/workers_rlinf.py)、
+  [roles.py](src/dobot_nexus/algorithms/rltoken/roles.py)、
   [replay.py](src/dobot_nexus/algorithms/rltoken/replay.py)。
 
 - [ ] **RLT-RETENTION：约束日志和训练产物的磁盘增长**
@@ -209,7 +209,7 @@
   验收：持续采集与更新都能推进；ACK 仅在持久提交后发出；积压有界；checkpoint
   清空未消费预取后，恢复的采样序列、更新预算和 optimizer 时钟一致；关闭不遗留工作线程。
   入口：[learner.py](src/dobot_nexus/algorithms/rltoken/learner.py)、
-  [workers_rlinf.py](src/dobot_nexus/algorithms/rltoken/workers_rlinf.py)、
+  [roles.py](src/dobot_nexus/algorithms/rltoken/roles.py)、
   [training.py](src/dobot_nexus/algorithms/rltoken/training.py)。
 
 - [ ] **RLT-METRICS：补齐采集、学习和同步的运行指标**
@@ -221,7 +221,7 @@
   验收：能定位“无可训练样本”“预算耗尽”“等待环境/持久化/权重应用”的停滞原因；
   指标不改变训练 RNG，不逐步传输大张量；GPU 耗时以真实设备测量验收。
   入口：[training.py](src/dobot_nexus/algorithms/rltoken/training.py)、
-  [workers_rlinf.py](src/dobot_nexus/algorithms/rltoken/workers_rlinf.py)。
+  [roles.py](src/dobot_nexus/algorithms/rltoken/roles.py)。
 
 - [x] **RLT-DOCS：统一设计文档与当前实现边界**
 
@@ -246,7 +246,8 @@
   验收：不重复执行控制命令，不重复累计 UTD，不发布未完成的部署；恢复覆盖 journal
   尾部事件；超时/失败后有界退出并只清理本次任务资源。真实 Ray/GPU 证据不能由 mock
   Worker 测试替代，脚本和报告放在 `local_script/`。
-  入口：[execution_rlinf.py](src/dobot_nexus/algorithms/rltoken/execution_rlinf.py)、
+  入口：[runtime/ray/backend.py](src/dobot_nexus/runtime/ray/backend.py)、
+  [topology.py](src/dobot_nexus/algorithms/rltoken/topology.py)、
   [training.py](src/dobot_nexus/algorithms/rltoken/training.py)、
   [weight_sync.py](src/dobot_nexus/algorithms/rltoken/weight_sync.py)。
 
@@ -303,9 +304,17 @@
   接入。Memory/递归状态需要先定义 history、reset、版本及 Replay 中上下文的恢复语义。
   验收：新增提供者独立导出/部署，不静态依赖 Pi0.5；算法不猜测模型私有状态。
 
-- [ ] **RLT-SHARED-EXECUTION：按实际复用需求抽取执行层**
+- [x] **RLT-SHARED-EXECUTION-P1：将 Ray/RLinf 执行机械下沉至 `src/dobot_nexus/runtime/`**
 
-  RLinf/Ray 目前隔离在算法私有 `execution_rlinf.py`、`workers_rlinf.py`。待第二个算法
-  确认需要相同启动、放置、通道和关闭语义，再确定公共执行适配的归属；不可直接放入
-  `modules/` 计算组件或扩大稳定层职责。Replay、优化器、recipe 和采集语义继续归算法。
-  验收：两个算法复用明确的执行行为，普通 BC/部署仍可在没有 RLinf 的环境导入运行。
+  已将固定版 RLinf + Ray 调度适配从 `algorithms/rltoken/` 剥离至顶层可选包 `runtime/`
+  （纯 Python 契约 `contracts.py`/`config.py`/`sync.py`/`factory.py`、测试注入后端
+  `runtime/local/`、延迟加载后端 `runtime/ray/`），RLToken 迁移为纯 Python `topology.py`
+  + `roles.py` 且零 `ray`/`rlinf` 导入；保留原 YAML、恢复、权重双槽与部署契约。
+  入口：`src/dobot_nexus/runtime/`、`src/dobot_nexus/algorithms/rltoken/{topology,roles,training}.py`、
+  `tests/runtime/`。
+
+- [ ] **RLT-SHARED-EXECUTION-P2：接入第二个 RL 算法验证公共 Runtime 语义**
+
+  待第二个在线 RL 算法（如 PPO/GRPO/SAC）接入 `src/dobot_nexus/runtime/` 时，基于真实需求
+  扩展多副本路由、分布式进程组与大权重同步契约，验证两个算法复用同一 Runtime 层且普通 BC、
+  模型与部署继续零 Ray/RLinf 依赖。

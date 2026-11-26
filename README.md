@@ -171,6 +171,7 @@ dobot-nexus/
 │   ├── inference/             # InferencePolicy, PolicySession, HTTP/WS servers, security guards
 │   ├── algorithms/recap/      # Returns, advantages, offline Value training & dataset labeling
 │   ├── algorithms/rltoken/    # Token, actor/critic, replay and online training
+│   ├── runtime/               # Execution contracts, in-process local/ and optional RLinf ray/ backends
 │   ├── modules/value/         # Reusable Fusion value networks, distributions & losses
 │   └── models/                # BaseVLAModule/BaseDataAdapter contract + isolated models (pi05/, pi0/)
 ├── data_processing/           # Dobot dual-arm 14D recorder PKL -> LeRobot v2.1 converter

@@ -13,7 +13,7 @@ Stage 2 冻结特征提供者，通过 RLTokenTrainer 采集环境反馈并训�
 | 模型与数据 | 使用既有 `BaseVLAModule`、`BaseDataAdapter` 和 `model.target`；Pi0.5 集成位于 `models/pi05/rltoken/` |
 | 表示训练 | `Pi05RLTokenModel` 复用同一次 VLA forward 的 prefix；Token 网络与重建 loss 位于 `algorithms/rltoken/token.py` |
 | 在线学习 | `algorithms/rltoken/` 拥有 Actor/双 Q、loss、transition、Replay、Learner、恢复和权重同步 |
-| 远程执行 | `execution_rlinf.py`、`workers_rlinf.py` 延迟导入 RLinf/Ray，构造单节点三角色 Worker |
+| 远程执行 | `runtime/ray/`（延迟导入 RLinf/Ray）+ `algorithms/rltoken/{topology,roles}.py` 声明并构造单节点三角色 Worker |
 | 部署 | `RLTokenPolicy` 组合冻结提供者与 Actor，由公共 `InferencePolicy` 加载自包含 Artifact |
 | 环境 | 外部包实现机器人或向量仿真协议，拥有控制器执行、奖励和 reset；算法包不导入本地诊断工具 |
 

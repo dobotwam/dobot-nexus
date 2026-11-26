@@ -1,10 +1,13 @@
-# RLToken 资源管理与 RLinf 执行
+# RLToken 资源管理与分布式 Runtime 执行
 
-当前执行适配位于 `algorithms/rltoken/execution_rlinf.py`、`workers_rlinf.py`，由
-`RLTokenTrainer.run()` 延迟加载。RLinf 固定 revision 为
-`7e90641c4135229db6d3426950cdb45cee6259a6`；算法、模型与普通部署不依赖活跃 Ray 集群。
-启动示例见[实现说明](rltoken_implementation.md)，尚未提供的资源模式见
-[TODO](../TODO.md)。
+当前 RLinf + Ray 执行适配已下沉至框架级可选运行时包 `src/dobot_nexus/runtime/ray/`（契约位于
+`runtime/contracts.py`、`config.py`、`sync.py`、`factory.py`，测试注入后端位于
+`runtime/local/`），由 `RLTokenTrainer.run()` 按 `runtime.launcher=rlinf` 延迟加载。
+RLToken 算法包仅保留纯 Python 拓扑声明 `algorithms/rltoken/topology.py` 与角色壳
+`algorithms/rltoken/roles.py`，不直接导入 `ray` 或 `rlinf`。RLinf 固定 revision 为
+`7e90641c4135229db6d3426950cdb45cee6259a6`（实测验证 `ray[default]==2.56.1`）；算法、模型、
+BC 与普通部署不依赖活跃 Ray 集群。启动示例见[实现说明](rltoken_implementation.md)，尚未提供的
+资源模式见[TODO](../TODO.md)。
 
 ## 复用边界
 
@@ -14,7 +17,7 @@
 | PackedPlacementStrategy | 将 Rollout/Learner 及可选仿真 Env 放到指定 GPU |
 | NodePlacementStrategy | CPU Env 的节点放置；Worker 内显式隐藏 CUDA |
 | Channel | 六条容量为 1 的独立通道，Nexus 另加消息字节上限 |
-| AsyncWeightSyncMixin | 初始阻塞同步，后续单个在途同步协调 |
+| `runtime/sync.py`（`SingleInFlightSyncCoordinator`） | 初始阻塞同步，后续单个在途收发对同步协调与版本校验（不再继承上游 `AsyncWeightSyncMixin`） |
 | 上游 runner、模型工厂、FSDP policy | 不作为 Nexus 基类；Nexus 自有业务对象与 Artifact |
 | DeviceLock、动态调度、offload/reload | 当前未接入 |
 
@@ -29,9 +32,9 @@
 | 角色 | 设备 | 持有状态 |
 | --- | --- | --- |
 | RLTokenTrainer | CPU driver | 远程句柄、采集/更新进度、同步和保存边界 |
-| EnvProxyWorker | 真机为 CPU；仿真可指定 GPU | 外部 adapter、会话、执行反馈、transition 拼装 |
-| RolloutWorker | rollout_gpu | 冻结 VLA/Encoder、Actor 双缓冲、特征缓存 |
-| LearnerWorker | learner_gpu | Actor、双 Q、Target Q、双优化器、CPU Replay/journal |
+| `ManagedRoleWorker` → `EnvRole` | 真机为 CPU；仿真可指定 GPU | 外部 adapter、会话、执行反馈、transition 拼装 |
+| `ManagedRoleWorker` → `RolloutRole` | rollout_gpu | 冻结 VLA/Encoder、Actor 双缓冲、特征缓存 |
+| `ManagedRoleWorker` → `LearnerRole` | learner_gpu | Actor、双 Q、Target Q、双优化器、CPU Replay/journal |
 
 `Cluster(num_nodes=1)`，Rollout 与 Learner 必须指定不同 GPU。仿真 `env_gpu` 可与
 Rollout 共用或使用另一张设备，需合计模型、渲染和物理状态的显存。省略 Env GPU 时
@@ -84,9 +87,11 @@ CUDA 请求完成后才能重用退役槽位。同步协调与原子应用分别
 
 ## 依赖与验收
 
-安装命令：
+安装命令（两份 pinned requirements 保持完全同步）：
 
 ```bash
+python -m pip install -r src/dobot_nexus/runtime/ray/requirements.txt
+# 兼容旧路径：
 python -m pip install -r src/dobot_nexus/algorithms/rltoken/requirements-rlinf.txt
 ```
 

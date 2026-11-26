@@ -171,6 +171,7 @@ dobot-nexus/
 │   ├── inference/             # InferencePolicy、PolicySession、HTTP/WS 服务与安全校验
 │   ├── algorithms/recap/      # 回报/优势计算、离线 Value 训练与数据集标注
 │   ├── algorithms/rltoken/    # Token、Actor/Critic、Replay 与在线训练
+│   ├── runtime/               # 执行协议、local/ 进程内后端与 ray/ 可选 RLinf 后端
 │   ├── modules/value/         # 公共 Fusion Value 网络、分布与损失组件
 │   └── models/                # BaseVLAModule/BaseDataAdapter 契约与独立模型实现（pi05/、pi0/）
 ├── data_processing/           # Dobot 双臂 14D 采集 PKL → LeRobot v2.1 转换工具

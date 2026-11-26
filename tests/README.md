@@ -18,6 +18,7 @@ tests/
 ├── entrypoints/                    # 环境脚本、训练/推理 launcher、真机样例 CLI
 │   └── atom/                       # ATOM 字段映射、相机生命周期、假设备执行与验证契约
 ├── algorithms/recap/              # Return、Advantage、标签、Value 作业与恢复
+├── runtime/                       # 执行协议、local 后端与可选 Ray/RLinf 依赖隔离
 ├── algorithms/rltoken/             # Token、loss、Replay、Learner、同步、向量仿真/批量 Rollout、部署与协调
 ├── models/
 │   ├── pi0/                       # Pi0 模型与数据语义

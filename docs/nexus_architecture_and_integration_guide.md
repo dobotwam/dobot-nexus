@@ -21,7 +21,8 @@ src/dobot_nexus/
 │   ├── server.py           # Nexus HTTP 接口
 │   └── transport/          # 通用 WebSocket 服务/客户端、NumPy msgpack 编解码
 ├── algorithms/recap/       # Return、Advantage、离线 Value 训练与标注
-├── algorithms/rltoken/     # Token、Actor/Critic、Replay、训练协调与可选 RLinf 执行
+├── algorithms/rltoken/     # Token、Actor/Critic、Replay、训练协调与角色拓扑
+├── runtime/                # 执行协议、local/ 进程内后端与 ray/ 可选 RLinf 后端
 ├── modules/
 │   ├── value/              # 可复用 Value 网络、损失与输入处理
 │   ├── memory/             # 模型无关 FrameSample 记忆类型、位置编码、采样、Torch 层、会话与特征库
@@ -207,7 +208,7 @@ model:
 只改变单步 loss 的算法可换 `model.target` 或 `training_step()`，继续使用 BCTrainer。
 需要 rollout、多模型、多优化器的算法在 `algorithms/<algorithm>/` 实现具体 Trainer，
 由 `algorithm.target` 选择；算法拥有 fingerprint、恢复状态、环境进度和部署导出。
-RLToken 的 Trainer、Replay、采集、同步和 RLinf 执行适配提供现有参考。复用计算放在
+RLToken 的 Trainer、Replay、采集、同步和 runtime 执行接口提供现有参考。复用计算放在
 `modules/`，具体 VLA 特征与数据适配留在模型包，不新增另一套模型继承协议。
 
 RL 私有 logprob、reward、advantage 和 token mask 留在算法模块；最终部署仍输出公共动作块。
