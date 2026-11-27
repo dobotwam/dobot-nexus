@@ -38,6 +38,7 @@ class TinyPrefixCore(_FakeCore):
 
 class Stage1Test(unittest.TestCase):
     def test_bf16_frozen_provider_survives_artifact_roundtrip(self):
+        self.config.model.precision = self.config.runtime.precision = "bf16"
         self.config.model.rltoken.training_mode = "token_only"
         self.config.model.rltoken.frozen_parameter_precision = "bf16"
         model = Pi05RLTokenModel(self.config, mode="train")
@@ -82,7 +83,7 @@ class Stage1Test(unittest.TestCase):
         self.assertFalse(invalid.encodable_mask.all())
         reference = adapter.decode_vla_actions(np.array([[[2, -2]]]), aux=context)
         np.testing.assert_array_equal(reference.actions, [[[1, -1]]])
-        with self.assertRaisesRegex(ValueError, "nonfinite"):
+        with self.assertRaisesRegex(ValueError, "finite"):
             adapter.decode_vla_actions(np.array([[[np.nan, 0]]]), aux=context)
         before = model.rl_feature_spec.feature_id
         self.config.model.rltoken.action_codec.controller.arm_delta_high = [0.2]
