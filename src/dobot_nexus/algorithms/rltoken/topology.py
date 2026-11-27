@@ -12,7 +12,8 @@ RLTOKEN_CHANNELS = (
 )
 
 
-def build_rltoken_topology(config, *, run_id, epoch, task_fingerprint, resume_path):
+def build_rltoken_topology(config, *, run_id, epoch, task_fingerprint, resume_path,
+                           expected_manifest_sha256=None):
     runtime = config.runtime
     resources = runtime.resources
     kwargs = {"config": config, "run_id": run_id, "epoch": epoch}
@@ -23,7 +24,7 @@ def build_rltoken_topology(config, *, run_id, epoch, task_fingerprint, resume_pa
             "rollout",
             f"{module}:RolloutRole",
             PlacementSpec("gpu", resources.rollout_gpu),
-            init_kwargs=kwargs.copy(),
+            init_kwargs={**kwargs, "expected_manifest_sha256": expected_manifest_sha256},
         ),
         RoleSpec(
             "learner",

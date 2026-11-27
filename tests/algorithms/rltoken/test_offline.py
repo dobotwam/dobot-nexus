@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
@@ -176,17 +177,40 @@ class OfflineTest(unittest.TestCase):
         learner = create_learner(spec, heads, learning, replay)
         cfg.train = _wrap(dict(max_steps=1, save_every=1))
         experiment = SimpleNamespace(run_dir=self.root, logger=logging.getLogger("prewarm-test"))
-        result = RLTokenPrewarmTrainer(cfg, experiment).run()
+        from dobot_nexus.algorithms.rltoken.checkpoint import load_resume, save_resume
+
+        with (
+            patch.object(Replay, "sample", side_effect=AssertionError("deep sample")),
+            patch.object(type(learner), "state_dict", side_effect=AssertionError("deep snapshot")),
+            patch("dobot_nexus.algorithms.rltoken.pretraining.save_resume",
+                  wraps=save_resume) as checkpoint_writer,
+        ):
+            result = RLTokenPrewarmTrainer(cfg, experiment).run()
         prewarm = self.root / "rltoken/prewarm.pt"
         saved = torch.load(prewarm, weights_only=False)["payload"]["state"]
         self.assertEqual(result.global_step, 1)
         self.assertEqual(saved["actor_updates"], 0)
         with self.assertRaisesRegex(ValueError, "actor update"):
             initialize_from_prewarm(learner, prewarm, task_identity="success")
+        first_checkpoint = Path(result.checkpoint)
+        first_manifest = json.loads((first_checkpoint / "manifest.json").read_text())
+        self.assertEqual(
+            checkpoint_writer.call_args.kwargs["feature_manifest_sha256"],
+            first_manifest["feature_manifest_sha256"],
+        )
+        fingerprint = first_manifest["task_fingerprint"]
         cfg.train.resume_from = result.checkpoint
+        cfg.train.keep_last_checkpoints = 2
         cfg.train.max_steps = 3
         result = RLTokenPrewarmTrainer(cfg, experiment).run()
         self.assertEqual(result.global_step, 3)
+        checkpoints = sorted(first_checkpoint.parent.glob("step-*"))
+        self.assertEqual(len(checkpoints), 2)
+        self.assertNotIn(first_checkpoint, checkpoints)
+        for path in checkpoints:
+            manifest = json.loads((path / "manifest.json").read_text())
+            self.assertEqual(manifest["task_fingerprint"], fingerprint)
+            self.assertTrue((path / manifest["feature_manifest"]).is_file())
         state = torch.load(prewarm, weights_only=False)["payload"]["state"]
         initialize_from_prewarm(learner, prewarm, task_identity="success")
         self.assertEqual(learner.update_step, 3)
@@ -209,7 +233,6 @@ class OfflineTest(unittest.TestCase):
         learner.update(incoming=[transition(7, spec=spec)])
         self.assertEqual((learner.update_step, learner.actor_updates), (4, 1))
         from dobot_nexus.algorithms.rltoken.artifacts import write_model_bundle
-        from dobot_nexus.algorithms.rltoken.checkpoint import load_resume, save_resume
         from dobot_nexus.algorithms.rltoken.policy import RLTokenPolicy
         from dobot_nexus.core.contracts import SamplingOptions
         from dobot_nexus.inference.policy import InferencePolicy
@@ -269,6 +292,15 @@ class OfflineTest(unittest.TestCase):
             initialize_from_prewarm(
                 create_learner(spec, heads, learning, scoped), prewarm, task_identity="success"
             )
+
+        for path in reversed(checkpoints):
+            cfg.train.resume_from = str(path)
+            cfg.train.max_steps = int(path.name.split("-")[1])
+            self.assertEqual(RLTokenPrewarmTrainer(cfg, experiment).run().checkpoint, str(path))
+        cfg.train.max_steps = 3
+        cfg.train.keep_last_checkpoints = 1
+        last = Path(RLTokenPrewarmTrainer(cfg, experiment).run().checkpoint)
+        self.assertEqual(list(last.parent.glob("step-*")), [last])
 
     def test_finalization_is_durable_idempotent_and_rejects_unknown(self):
         replay = Replay(self.root/'journal', feature_spec(), 2)

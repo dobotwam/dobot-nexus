@@ -14,7 +14,16 @@ from dobot_nexus.runtime.contracts import ChannelEmpty
 
 from .artifacts import retain_feature_bundle, write_model_bundle
 from .batching import environment_batch_size
-from .checkpoint import load_resume, save_resume
+from .checkpoint import (
+    _PENDING,
+    _export_staging,
+    _fsync,
+    _publication_lock,
+    _reservation_epoch,
+    _sync_dir,
+    load_resume,
+    save_resume,
+)
 from .configuration import LearningConfig
 from .env import EnvSession
 from .learner import create_learner
@@ -91,10 +100,12 @@ class RolloutRole:
         "rng_state",
         "restore_rng",
         "export_deployment",
+        "feature_manifest_sha256",
     )
 
-    def __init__(self, config, run_id, epoch):
+    def __init__(self, config, run_id, epoch, expected_manifest_sha256=None):
         self.config, self.run_id, self.epoch = config, run_id, epoch
+        self.expected_manifest_sha256 = expected_manifest_sha256
         self.engine = None
         self.timeout = float(config.runtime.get("rpc_timeout", 120))
 
@@ -104,10 +115,14 @@ class RolloutRole:
         feature_root = retain_feature_bundle(
             self.config.model.features.artifact,
             Path(self.config.exp.run_dir) / "rltoken/features",
+            expected_manifest_sha256=self.expected_manifest_sha256,
         )
         self.config.model.features.artifact = str(feature_root)
         # Assets and model-owned config now point into the retained run bundle.
-        policy = RLTokenPolicy(self.config, mode="infer").to(device)
+        policy = RLTokenPolicy(
+            self.config, mode="infer", retained_feature_root=feature_root
+        ).to(device)
+        self._feature_manifest_sha256 = policy._retained_files[Path("manifest.yaml")].sha256
         self.engine = RolloutEngine(
             policy,
             run_id=self.run_id,
@@ -145,6 +160,9 @@ class RolloutRole:
     def rng_state(self):
         return self.engine.generator.get_state().cpu()
 
+    def feature_manifest_sha256(self):
+        return self._feature_manifest_sha256
+
     def restore_rng(self, state):
         if state is not None:
             self.engine.generator.set_state(state.cpu())
@@ -154,19 +172,23 @@ class RolloutRole:
         with self.engine.weights.request() as (actor, version):
             self.engine.policy.actor = actor
             path = Path(path)
-            staging = path.with_name("." + path.name + "-" + uuid.uuid4().hex)
-            write_model_bundle(staging, self.engine.policy, self.config)
-            # Every nested asset and manifest is complete before publishing the directory.
-            from .checkpoint import _fsync, _sync_dir
-
-            for file in staging.rglob("*"):
-                if file.is_file():
-                    _fsync(file)
-            for directory in sorted((p for p in staging.rglob("*") if p.is_dir()), reverse=True):
-                _sync_dir(directory)
-            _sync_dir(staging)
-            staging.rename(path)
-            _sync_dir(path.parent)
+            with _export_staging(path, self.epoch) as staging:
+                write_model_bundle(staging, self.engine.policy, self.config)
+                # Persist all nested assets before publishing the directory.
+                for file in staging.rglob("*"):
+                    if file.is_file():
+                        _fsync(file)
+                directories = (p for p in staging.rglob("*") if p.is_dir())
+                for directory in sorted(directories, reverse=True):
+                    _sync_dir(directory)
+                _sync_dir(staging)
+                with _publication_lock(path.parent):
+                    if _PENDING.fullmatch(path.name) and _reservation_epoch(path) != self.epoch:
+                        raise RuntimeError(
+                            f"Deployment export reservation missing or cancelled: {path}"
+                        )
+                    staging.rename(path)
+                    _sync_dir(path.parent)
         return {
             "path": str(path),
             "run_id": version.run_id,
@@ -298,7 +320,7 @@ class LearnerRole:
     def rollout_rng(self):
         return getattr(self.learner, "rollout_rng", None)
 
-    def snapshot(self, rollout_rng=None):
+    def snapshot(self, rollout_rng=None, feature_manifest_sha256=None):
         if rollout_rng is not None:
             self.learner.rollout_rng = rollout_rng
         path = save_resume(
@@ -307,6 +329,8 @@ class LearnerRole:
             task_fingerprint=self.task_fingerprint,
             run_id=self.run_id,
             feature_manifest="../../features/manifest.yaml",
+            feature_manifest_sha256=feature_manifest_sha256,
+            keep_last=self.config.train.get("keep_last_checkpoints"),
         )
         return str(path)
 

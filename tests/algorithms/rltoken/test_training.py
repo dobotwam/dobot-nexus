@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import ast
+import errno
 import json
 import logging
+import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -15,19 +18,30 @@ from unittest.mock import patch
 
 import torch
 
-from dobot_nexus.algorithms.rltoken.artifacts import feature_metadata
+from dobot_nexus.algorithms.rltoken.artifacts import (
+    feature_metadata,
+    file_digest,
+    load_provider,
+    retain_feature_bundle,
+    write_model_bundle,
+)
 from dobot_nexus.algorithms.rltoken.configuration import HeadConfig, LearningConfig
+from dobot_nexus.algorithms.rltoken.identity import content_digest
 from dobot_nexus.algorithms.rltoken.learner import create_learner
+from dobot_nexus.algorithms.rltoken.policy import RLTokenPolicy
 from dobot_nexus.algorithms.rltoken.pretraining import save_prewarm
 from dobot_nexus.algorithms.rltoken.replay import Replay
 from dobot_nexus.algorithms.rltoken.roles import EnvRole, LearnerRole, RolloutRole
 from dobot_nexus.algorithms.rltoken.training import RLTokenTrainer, validate_training
 from dobot_nexus.algorithms.rltoken.transitions import Finalization
-from dobot_nexus.core.config import load_config
+from dobot_nexus.core.config import _wrap, load_config
+from dobot_nexus.core.contracts import SamplingOptions
+from dobot_nexus.inference.policy import InferencePolicy
 from dobot_nexus.runtime.local import LocalRuntime
 from dobot_nexus.runtime.sync import SingleInFlightSyncCoordinator
+from dobot_nexus.training.resume import capture_rng_state
 
-from .fakes import transition
+from .fakes import observation, transition
 from .test_env_rollout import ConfirmingAgent
 from .test_roles import online_config
 
@@ -159,6 +173,127 @@ class TrainingTest(unittest.TestCase):
     def trainer(self, config):
         return RLTokenTrainer(config, self.experiment, runtime_factory=LocalRuntime)
 
+    def historical_run(self):
+        """Write the historical deep v1 state, journal and writable provider bundle directly."""
+        cfg = self.online()
+        cfg.train.max_steps = 1
+        original = self.trainer(cfg)
+        run = self.root / "rltoken"
+        provider, config, spec = load_provider(cfg.model.features.artifact)
+        retained = write_model_bundle(run / "features", provider, config)
+        for file in retained.rglob("*"):
+            if file.is_file():
+                file.chmod(0o644)
+        cfg.model.features.artifact = str(retained)
+        role = LearnerRole(cfg, original.run_id, original.epoch, original.task_fingerprint, None)
+        role.initialize(SimpleNamespace(channels=None, device="cpu"))
+        legacy = run / "checkpoints/step-000000001-0123abcd"
+        legacy.mkdir(parents=True)
+        try:
+            learner = role.learner
+            learner.update(1, incoming=[transition(spec=spec)])
+            state = learner.state_dict()
+            state.update(
+                rng=capture_rng_state(),
+                task_fingerprint=original.task_fingerprint,
+                run_id=original.run_id,
+            )
+            torch.save(state, legacy / "state.pt")
+            connection = sqlite3.connect(legacy / "journal.sqlite")
+            try:
+                learner.replay.connection.backup(connection)
+            finally:
+                connection.close()
+            manifest = dict(
+                format="rltoken_resume_v1",
+                state_digest=content_digest(state),
+                run_id=original.run_id,
+                feature_manifest="../../features/manifest.yaml",
+                watermark=learner.replay.watermark,
+                task_fingerprint=original.task_fingerprint,
+                critic_updates=learner.critic_updates,
+                actor_updates=learner.actor_updates,
+            )
+            (legacy / "manifest.json").write_text(json.dumps(manifest))
+        finally:
+            role.close()
+        (run / "journal.sqlite").unlink()
+        (legacy.parent / "latest_resume").write_text(legacy.name)
+        self.assertNotIn("retained_files_sha256", (retained / "manifest.yaml").read_text())
+        self.assertFalse(retained.with_suffix(".sha256").exists())
+        policy = RLTokenPolicy(cfg, mode="infer")
+        policy.actor.load_state_dict(state["actor"])
+        options = SamplingOptions(seed=42, deterministic=True)
+        actions = policy.predict_action_chunk(observation(), options).actions
+        cfg.train.resume_from = "auto"
+        return cfg, retained, actions
+
+    def check_legacy_upgrade(self, interrupt_at=None):
+        cfg, retained, expected_actions = self.historical_run()
+        seal = retained.with_suffix(".sha256")
+        manifest = retained / "manifest.yaml"
+        old_digest = file_digest(manifest)
+        if interrupt_at:
+            replace_file = os.replace
+
+            def interrupt(src, dst):
+                if interrupt_at == "A" and dst == manifest:
+                    raise OSError(errno.ENOSPC, "before manifest replacement")
+                if interrupt_at == "B" and dst == seal and len(src.read_text().splitlines()) == 1:
+                    raise OSError(errno.ENOSPC, "before seal narrowing")
+                return replace_file(src, dst)
+
+            with patch("os.replace", interrupt), self.assertRaises(OSError) as failure:
+                retain_feature_bundle(retained, retained)
+            self.assertEqual(failure.exception.errno, errno.ENOSPC)
+            new_digest, prior = seal.read_text().splitlines()
+            self.assertEqual(seal.stat().st_mode & 0o777, 0o400)
+            self.assertEqual(prior, old_digest)
+            self.assertNotEqual(new_digest, prior)
+            self.assertEqual(file_digest(manifest), prior if interrupt_at == "A" else new_digest)
+            RLTokenPolicy(cfg, mode="train")  # A learner can initialize at either boundary.
+            retain_feature_bundle(retained, retained)
+            self.assertEqual(seal.read_text(), new_digest + "\n")
+
+        result = self.trainer(cfg).run()
+        self.assertEqual(result.global_step, 1)
+        final = file_digest(manifest)
+        self.assertEqual(seal.read_text(), final + "\n")
+        self.assertEqual(seal.stat().st_mode & 0o777, 0o400)
+        self.assertNotEqual(old_digest, final)
+        self.assertIn("retained_files_sha256", manifest.read_text())
+        saved = json.loads((Path(result.checkpoint) / "manifest.json").read_text())
+        self.assertEqual(saved["feature_manifest_sha256"], final)
+        deployed = retained.parent / (retained.parent / "latest_deployment.txt").read_text()
+        for file in retained.rglob("*"):
+            if file.is_file():
+                self.assertEqual(file.stat().st_mode & 0o222, 0)
+                self.assertTrue(
+                    file.samefile(deployed / "deployment/features" / file.relative_to(retained))
+                )
+        shutil.rmtree(retained)
+        infer = _wrap(
+            dict(
+                schema_version=1,
+                task="infer",
+                model=dict(artifact=str(deployed)),
+                runtime=dict(device="cpu"),
+            )
+        )
+        actual = InferencePolicy(infer).predict_chunk(
+            observation(), SamplingOptions(seed=42, deterministic=True)
+        )
+        self.assertTrue((actual.actions == expected_actions).all())
+
+    def test_historical_checkpoint_and_writable_features_upgrade_through_local_runtime(self):
+        self.check_legacy_upgrade()
+
+    def test_legacy_upgrade_retries_after_transition_seal_publication(self):
+        self.check_legacy_upgrade("A")
+
+    def test_legacy_upgrade_retries_after_manifest_replacement(self):
+        self.check_legacy_upgrade("B")
+
     def test_v1_update_limit_snapshots_after_last_durable_ack_and_auto_resume(self):
         config = self.online()
         config.environment.min_actor_updates = 256
@@ -171,10 +306,11 @@ class TrainingTest(unittest.TestCase):
             completed.append(result["chunks"])
             return result
 
-        def snapshot_without_rng(role):
+        def snapshot_without_rng(role, *, feature_manifest_sha256):
             self.assertEqual(role.learner.replay.admitted, len(completed))
             barriers.append(role.learner.critic_updates)
-            return snapshot(role)
+            self.assertEqual(len(feature_manifest_sha256), 64)
+            return snapshot(role, feature_manifest_sha256=feature_manifest_sha256)
 
         trainer = self.trainer(config)
         with (
@@ -195,6 +331,44 @@ class TrainingTest(unittest.TestCase):
         self.assertEqual(resumed.run_id, trainer.run_id)
         self.assertNotEqual(resumed.epoch, trainer.epoch)
         self.assertEqual(resumed.run().global_step, 4)
+
+    def test_online_retention_across_resume_keeps_both_artifacts_loadable(self):
+        from dobot_nexus.core.config import _wrap
+        from dobot_nexus.inference.policy import InferencePolicy
+
+        from .fakes import observation
+
+        config = self.online()
+        config.train.update(max_steps=1, save_every=1)
+        trainer = self.trainer(config)
+        trainer.run()
+        config.train.update(resume_from="auto", max_steps=4, keep_last_checkpoints=2,
+                            keep_last_deployments=2)
+        resumed = self.trainer(config)
+        self.assertEqual(resumed.task_fingerprint, trainer.task_fingerprint)
+        resumed.run()
+        root = self.root / "rltoken"
+        checkpoints = list((root / "checkpoints").glob("step-*"))
+        deployments = list((root / "deployments").glob("actor-*"))
+        self.assertEqual((len(checkpoints), len(deployments)), (2, 2))
+        self.assertIn(root / (root / "latest_deployment.txt").read_text(), deployments)
+        active = (root / "checkpoints/latest_resume").read_text()
+        self.assertIn(active, [p.name for p in checkpoints])
+        for path in checkpoints:
+            manifest = json.loads((path / "manifest.json").read_text())
+            self.assertTrue((path / manifest["feature_manifest"]).is_file())
+            role = LearnerRole(
+                config, resumed.run_id, resumed.epoch, resumed.task_fingerprint, path
+            )
+            try:
+                status = role.initialize(SimpleNamespace(device="cpu", channels=None))
+                self.assertEqual(status["critic_updates"], manifest["critic_updates"])
+            finally:
+                role.close()
+        for path in deployments:
+            infer = _wrap(dict(model=dict(artifact=str(path)), runtime=dict(device="cpu")))
+            self.assertEqual(InferencePolicy(infer).predict_chunk(observation()).actions.shape,
+                             (1, 2, 2))
 
     def test_pretrained_actor_starts_immediately_and_drains_episode_budget(self):
         config = self.online(td3=True)

@@ -13,8 +13,15 @@ import torch
 from dobot_nexus.core.contracts import TrainResult
 from dobot_nexus.core.import_utils import import_from_string
 
-from .artifacts import feature_metadata, load_provider, retain_feature_bundle
-from .checkpoint import _fsync, _sync_dir, load_resume, save_resume
+from .artifacts import feature_metadata, file_digest, load_provider, retain_feature_bundle
+from .checkpoint import (
+    _fsync,
+    _sync_dir,
+    load_resume,
+    resume_feature_root,
+    save_resume,
+    validate_retention_config,
+)
 from .configuration import HeadConfig, LearningConfig, validate_recipe
 from .identity import content_digest
 from .learner import create_learner
@@ -130,7 +137,7 @@ class RLTokenCacheTrainer:
             validation = json.loads(report.read_text())
             if not validation.get("accepted") or validation.get("feature_id") != spec.feature_id:
                 raise ValueError("Token dependence gate or feature identity failed.")
-        provider, _, _ = load_provider(root)
+        provider, _, _ = load_provider(cfg.model.features.artifact)
         provider.to(cfg.runtime.get("device", "cpu"))
         episodes = import_from_string(cfg.data.episode_reader)(cfg.data)
         path = build_cache(
@@ -157,6 +164,7 @@ class RLTokenPrewarmTrainer:
         )
         if not isinstance(self.task_identity, str) or not self.task_identity.strip():
             raise ValueError("Declare prewarm.task_identity or algorithm.task_identity.")
+        validate_retention_config(config.train)
         for name in ("max_steps", "save_every"):
             value = config.train.get(name)
             if type(value) is not int or value <= 0:
@@ -169,14 +177,19 @@ class RLTokenPrewarmTrainer:
         root.mkdir(parents=True, exist_ok=True)
         resume = cfg.train.get("resume_from")
         feature_source = cfg.model.features.artifact
+        expected_manifest_sha256 = None
         if resume == "auto":
             pointer = root / "checkpoints/latest_resume"
             resume = pointer.parent / pointer.read_text().strip()
         if resume:
             resume_path = Path(resume)
             manifest = json.loads((resume_path / "manifest.json").read_text())
-            feature_source = (resume_path / manifest["feature_manifest"]).parent.resolve()
-        retained = retain_feature_bundle(feature_source, root / "features")
+            feature_source = resume_feature_root(resume_path, manifest)
+            expected_manifest_sha256 = manifest.get("feature_manifest_sha256")
+        retained = retain_feature_bundle(
+            feature_source, root / "features", expected_manifest_sha256=expected_manifest_sha256
+        )
+        feature_manifest_sha256 = file_digest(retained / "manifest.yaml")
         _, spec, _ = feature_metadata(retained)
         cache = load_cache(
             cfg.data.cache_path,
@@ -246,6 +259,8 @@ class RLTokenPrewarmTrainer:
                         task_fingerprint=task,
                         run_id=run_id,
                         feature_manifest="../../features/manifest.yaml",
+                        feature_manifest_sha256=feature_manifest_sha256,
+                        keep_last=cfg.train.get("keep_last_checkpoints"),
                     )
                 )
                 self.experiment.logger.info("RLToken prewarm step=%d", learner.update_step)

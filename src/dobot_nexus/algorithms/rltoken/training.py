@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import stat
 import time
 import uuid
 from functools import partial
@@ -16,6 +17,23 @@ from dobot_nexus.runtime.sync import SingleInFlightSyncCoordinator
 
 from .artifacts import feature_metadata
 from .batching import environment_batch_size
+from .checkpoint import (
+    _DEPLOYMENT,
+    _after_publication,
+    _discard_directory,
+    _export_reservation,
+    _mark_published,
+    _pointer_state,
+    _prune_deployments_locked,
+    _publication_lock,
+    _reconcile_published_history,
+    _replace_pointer,
+    _reservation_epoch,
+    _sync_dir,
+    _write_published_history,
+    resume_feature_root,
+    validate_retention_config,
+)
 from .configuration import (
     HeadConfig,
     LearningConfig,
@@ -33,6 +51,7 @@ def validate_training(config):
     PolicySwitch.from_config(config)
     runtime = config.get("runtime", {})
     train = config.get("train", {})
+    validate_retention_config(train)
     if runtime.get("launcher") != "rlinf":
         raise ValueError("RLTokenTrainer requires runtime.launcher=rlinf (one driver).")
     if runtime.get("fsdp", {}).get("enabled", False):
@@ -107,20 +126,28 @@ def validate_training(config):
     return heads, learning
 
 
+def _publication_directory(path):
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        path.mkdir(parents=True, exist_ok=True)
+        entry = path.lstat()
+    if not stat.S_ISDIR(entry.st_mode):
+        raise ValueError(f"Deployment publication requires a real directory: {path}")
+    return entry.st_dev, entry.st_ino
+
+
 class RLTokenTrainer:
     def __init__(self, config, experiment, *, runtime_factory=None):
         self.runtime_factory = runtime_factory
         self.config, self.experiment = config, experiment
         self.heads, self.learning = validate_training(config)
         self.resume_path = self._resume_path()
+        self.expected_manifest_sha256 = None
         if self.resume_path:
             manifest = json.loads((self.resume_path / "manifest.json").read_text())
-            feature_manifest = manifest.get("feature_manifest")
-            if not feature_manifest or not (self.resume_path / feature_manifest).is_file():
-                raise FileNotFoundError("Resume requires its retained frozen feature bundle.")
-            config.model.features.artifact = str(
-                (self.resume_path / feature_manifest).parent.resolve()
-            )
+            config.model.features.artifact = str(resume_feature_root(self.resume_path, manifest))
+            self.expected_manifest_sha256 = manifest.get("feature_manifest_sha256")
         _, spec, _ = feature_metadata(config.model.features.artifact)
         if (
             spec.reference_horizon < self.heads.chunk_size
@@ -144,7 +171,6 @@ class RLTokenTrainer:
         )
         self.run_id = uuid.uuid4().hex
         if self.resume_path:
-            manifest = json.loads((self.resume_path / "manifest.json").read_text())
             if manifest.get("task_fingerprint") != self.task_fingerprint:
                 raise ValueError("Resume task/reward fingerprint mismatch.")
             self.run_id = manifest["run_id"]
@@ -171,11 +197,13 @@ class RLTokenTrainer:
             epoch=self.epoch,
             task_fingerprint=self.task_fingerprint,
             resume_path=self.resume_path,
+            expected_manifest_sha256=self.expected_manifest_sha256,
         )
         runtime = (self.runtime_factory or create_runtime)(self.config, self.experiment.logger)
         session = runtime.start(topology)
         try:
             learner, rollout = session.role("learner"), session.role("rollout")
+            feature_manifest_sha256 = rollout.call("feature_manifest_sha256").wait()
             status = session.init_results["learner"]
             if self.learning.td3 is not None and self.resume_path:
                 rng = learner.call("rollout_rng").wait()
@@ -185,7 +213,7 @@ class RLTokenTrainer:
                 session.role("env").call("restore_pending", pending).wait()
             sync = SingleInFlightSyncCoordinator()
             self._sync_weights(session, sync, status)
-            return self._coordinate(session, sync, status)
+            return self._coordinate(session, sync, status, feature_manifest_sha256)
         finally:
             session.close()
 
@@ -215,7 +243,56 @@ class RLTokenTrainer:
             and applied >= minimum
         )
 
-    def _coordinate(self, session, sync, status):
+    def _publish_deployment(self, rollout, version):
+        root = self.experiment.run_dir / "rltoken"
+        deployments = root / "deployments"
+        if _publication_directory(root) == _publication_directory(deployments):
+            raise ValueError("Deployment publication directories must have distinct inodes.")
+        destination = deployments / f"actor-{version.actor_update}-{uuid.uuid4().hex[:8]}"
+        relative = destination.relative_to(root)
+        pending = destination.with_name(".pending-" + destination.name)
+        pointer = root / "latest_deployment.txt"
+        with _export_reservation(pending, destination, self.epoch) as reserve:
+            exported = rollout.call("export_deployment", str(pending)).wait()
+            exported_version = ActorVersion(
+                exported["run_id"], exported["learner_epoch"], exported["actor_update"]
+            )
+            if exported_version != version or exported["path"] != str(pending):
+                raise ValueError("Deployment differs from the final Actor version or path.")
+            with _publication_lock(root):
+                with _publication_lock(destination.parent):
+                    if _reservation_epoch(pending) != self.epoch:
+                        raise RuntimeError(
+                            f"Deployment export reservation missing or cancelled: {pending}"
+                        )
+                    if not stat.S_ISDIR(pending.lstat().st_mode):
+                        raise ValueError("Rollout must export a real pending deployment directory.")
+                    if destination.exists() or destination.is_symlink():
+                        raise FileExistsError(destination)
+                    history = _reconcile_published_history(
+                        deployments, pointer, "deployments/", _DEPLOYMENT
+                    )
+                    try:
+                        pending.rename(destination)
+                        reserve.unlink()
+                        _mark_published(deployments, destination, _DEPLOYMENT)
+                        _replace_pointer(pointer, relative)
+                        _sync_dir(root)
+                    except BaseException:
+                        state = _pointer_state(pointer, relative)
+                        if state != "inactive":
+                            _sync_dir(root)
+                        elif destination.exists():
+                            _discard_directory(destination)
+                        raise
+                    with _after_publication(pointer):
+                        _write_published_history(deployments, [*history, destination.name])
+                        _prune_deployments_locked(
+                            root, self.config.train.get("keep_last_deployments"), relative
+                        )
+        return destination
+
+    def _coordinate(self, session, sync, status, feature_manifest_sha256):
         learner, rollout, env = (session.role(name) for name in ("learner", "rollout", "env"))
         config = self.config
         handles = {}
@@ -271,29 +348,13 @@ class RLTokenTrainer:
                 sync.drain()
                 version = self._sync_weights(session, sync, status)
                 applied = version.actor_update
+                snapshot_args = {"feature_manifest_sha256": feature_manifest_sha256}
                 if self.learning.td3 is not None:
-                    rollout_rng = rollout.call("rng_state").wait()
-                    checkpoint = learner.call("snapshot", rollout_rng=rollout_rng).wait()
-                else:
-                    checkpoint = learner.call("snapshot").wait()
+                    snapshot_args["rollout_rng"] = rollout.call("rng_state").wait()
+                checkpoint = learner.call("snapshot", **snapshot_args).wait()
                 ready = self._ready(status, applied)
                 if ready:
-                    root = self.experiment.run_dir / "rltoken"
-                    destination = root / "deployments" / f"actor-{applied}-{uuid.uuid4().hex[:8]}"
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    exported = rollout.call("export_deployment", str(destination)).wait()
-                    exported_version = ActorVersion(
-                        exported["run_id"], exported["learner_epoch"], exported["actor_update"]
-                    )
-                    if exported_version != version or exported["path"] != str(destination):
-                        raise ValueError("Deployment differs from the final Actor version or path.")
-                    from .checkpoint import _fsync, _sync_dir
-
-                    pointer = root / (".latest-deployment-" + uuid.uuid4().hex)
-                    pointer.write_text(str(destination.relative_to(root)))
-                    _fsync(pointer)
-                    pointer.replace(root / "latest_deployment.txt")
-                    _sync_dir(root)
+                    self._publish_deployment(rollout, version)
                     deployed = True
                 self.experiment.logger.info(
                     "RLToken checkpoint step=%d actor=%d path=%s",
