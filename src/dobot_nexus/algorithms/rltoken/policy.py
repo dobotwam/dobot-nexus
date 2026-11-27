@@ -168,9 +168,11 @@ class RLTokenPolicy(BaseVLAModule):
                 if all(not f.identity.mode & 0o222 for f in files.values()):
                     self._retained_files = files
                     self._retained_root = root
-            self.provider, self.provider_config, _ = load_provider(
-                root, _verified_files=(root, files)
+            self.provider, self.provider_config, loaded_spec = load_provider(
+                root, _verified_files=(root, files), expected_manifest_sha256=digest,
             )
+            if loaded_spec != self.feature_spec:
+                raise ValueError("Loaded provider differs from the selected feature spec.")
             self.provider.eval().requires_grad_(False)
             if self._retained_root is not None:
                 generator = torch.Generator().manual_seed(secrets.randbits(63))
@@ -235,6 +237,9 @@ class RLTokenPolicy(BaseVLAModule):
             return TrainOutput(loss, metrics)
         raise ValueError("RLToken batch.update must be actor or critic.")
 
+    def warmup_control(self):
+        return {"rlt_switch_flags": [True]}
+
     @torch.no_grad()
     def predict_action_chunk(self, observation, options):
         if self.mode != "infer":
@@ -243,12 +248,14 @@ class RLTokenPolicy(BaseVLAModule):
         base_seed = (
             options.seed if options.seed is not None else (0 if options.deterministic else None)
         )
-        algorithm = self.config.get("algorithm", {})
-        reference_steps = algorithm.get("reference_num_steps", 10) if isinstance(algorithm, dict) else 10
+        reference_steps = options.num_steps
+        if reference_steps is None:
+            algorithm = self.config.get("algorithm", {})
+            reference_steps = algorithm.get("reference_num_steps") if isinstance(algorithm, dict) else None
+            if reference_steps is None and self.head_config.residual is not None:
+                reference_steps = 10
         reference_options = replace(options, seed=sampling_seed(base_seed, "reference"),
-            num_steps=(options.num_steps if options.num_steps is not None else
-                       reference_steps
-                       if self.head_config.residual is not None else None))
+                                    num_steps=reference_steps)
         packet = self.provider.extract_rl_features(observation, reference_options).validate(
             self.feature_spec, chunk_size=self.head_config.chunk_size
         )

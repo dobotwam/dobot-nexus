@@ -10,7 +10,7 @@ TOKENIZER_PATH="${TOKENIZER_PATH:-${OPENPI_TOKENIZER_PATH:-}}"
 POLICY_HOST="${POLICY_HOST:-127.0.0.1}"
 POLICY_PORT="${POLICY_PORT:-8000}"
 GPU="${GPU:-0}"
-NUM_STEPS="${NUM_STEPS:-10}"
+NUM_STEPS="${NUM_STEPS:-}"
 SEED="${SEED:-42}"
 FIXED_SEED="${FIXED_SEED:-0}"
 WARMUP="${WARMUP:-1}"
@@ -23,7 +23,7 @@ Usage:
 MODEL_PATH may point to a Nexus run directory, checkpoints/latest.txt,
 step_XXXXXXXX Artifact directory, deployment/pytorch directory, or a file
 inside that Artifact such as deployment/pytorch/full_weights.pt.
-BC, RECAP and Memory profiles are selected from the Artifact automatically.
+BC, RECAP, Memory and RLToken profiles are selected from the Artifact automatically.
 RECAP supports --recap-condition base|positive|negative. Memory requires
 BRIDGE_MODE=memory on both the robot server and robot client launchers.
 
@@ -87,6 +87,9 @@ fi
 ARTIFACT_DIR="${resolved_paths[0]}"
 TORCH_CHECKPOINT="${resolved_paths[1]}"
 
+if [[ -n "${NUM_STEPS}" ]]; then
+  set -- --num-steps "${NUM_STEPS}" "$@"
+fi
 case "${FIXED_SEED}" in
   0) seed_args=() ;;
   1) seed_args=(--fixed-seed) ;;
@@ -120,7 +123,6 @@ PYTHONPATH="${LAUNCH_PYTHONPATH}" exec "${POLICY_PYTHON}" -m dobot_nexus.models.
   --port "${POLICY_PORT}" \
   --gpu "${GPU}" \
   --device cuda \
-  --num-steps "${NUM_STEPS}" \
   --seed "${SEED}" \
   "${seed_args[@]}" \
   "${warmup_args[@]}" \

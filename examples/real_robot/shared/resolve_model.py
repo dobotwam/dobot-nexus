@@ -61,6 +61,8 @@ def _artifact_file(artifact: Path, value: object, *, label: str) -> Path:
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError(f"Artifact {label} must be a relative path, got: {relative}")
     path = (artifact / relative).resolve()
+    if not path.is_relative_to(artifact.resolve()):
+        raise ValueError(f"Artifact {label} escapes its bundle: {relative}")
     if not path.is_file():
         raise FileNotFoundError(f"Artifact {label} was not found: {path}")
     return path
@@ -97,9 +99,23 @@ def resolve_model_path(value: str | Path) -> ResolvedModel:
         ),
         label="Torch deployment weights",
     )
+    stats_root, stats_path = artifact, files.get("norm_stats", "assets/norm_stats.json")
+    if manifest.get("model", {}).get("target") == "dobot_nexus.algorithms.rltoken.policy:RLTokenPolicy":
+        relative = files.get("feature_manifest")
+        if not isinstance(relative, str) or Path(relative).name != "manifest.yaml":
+            raise ValueError("Composed policy requires a declared feature_manifest.")
+        child = _artifact_file(artifact, relative, label="feature manifest")
+        stats_root = child.parent
+        with child.open(encoding="utf-8") as handle:
+            provider = yaml.safe_load(handle)
+        if not isinstance(provider, dict) or not isinstance(provider.get("files"), dict):
+            raise ValueError(f"Invalid feature manifest: {child}")
+        provider_files = provider["files"]
+        stats_path = provider_files.get("model_assets", {}).get(
+            "data.norm_stats_path", provider_files.get("norm_stats", "assets/norm_stats.json")
+        )
     norm_stats = _artifact_file(
-        artifact,
-        files.get("norm_stats", "assets/norm_stats.json"),
+        stats_root, stats_path,
         label="normalization statistics",
     )
     for key, value in files.get("model_assets", {}).items():

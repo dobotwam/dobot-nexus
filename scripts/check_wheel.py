@@ -52,7 +52,8 @@ assert importlib.metadata.version('dobot-nexus') == dobot_nexus.__version__
 assert importlib.metadata.metadata('dobot-nexus')['License-Expression'] == 'Apache-2.0'
 for target in ('dobot_nexus.models.pi05.modeling_pi05:Pi05Model',
                'dobot_nexus.models.pi05.modeling_recap:Pi05ReCapModel',
-               'dobot_nexus.models.pi05.memory.modeling_memory:Pi05MemoryModel'):
+               'dobot_nexus.models.pi05.memory.modeling_memory:Pi05MemoryModel',
+               'dobot_nexus.algorithms.rltoken.policy:RLTokenPolicy'):
     with tempfile.TemporaryDirectory() as artifact:
         pathlib.Path(artifact, 'manifest.yaml').write_text(
             'schema_version: 2\nmodel:\n  target: '+target+'\n')
@@ -61,7 +62,7 @@ for target in ('dobot_nexus.models.pi05.modeling_pi05:Pi05Model',
             config = _load_policy(args)
         assert config.model.target == target
         assert config.model.artifact == artifact
-print(json.dumps({'version': dobot_nexus.__version__, 'profiles_loaded': 3,
+print(json.dumps({'version': dobot_nexus.__version__, 'profiles_loaded': 4,
                   'installed_module': dobot_nexus.__file__}))
 '''
         subprocess.run([sys.executable, '-I', '-c', 'INSTALLED='+repr(str(installed))+'\n'+probe],

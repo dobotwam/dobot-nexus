@@ -116,6 +116,9 @@ class InferencePolicy:
                 expected_task="train",
                 allow_extends=False,
             )
+            snapshot_context = verified_artifact_snapshot(
+                self.artifact_dir, self.manifest, training_config
+            )
         if self.artifact_dir is not None:
             manifest_model = self.manifest.get("model", {})
             if manifest_model.get("target") != training_config.model.target:
@@ -268,8 +271,11 @@ class InferencePolicy:
                 },
                 state=np.zeros((1, self.spec.state_dim), dtype=np.float32),
                 prompt=["warm up"],
+                control=getattr(self.model, "warmup_control", dict)(),
             )
-        return self.predict_chunk(observation, SamplingOptions(seed=0))
+        return self.predict_chunk(observation, SamplingOptions(
+            seed=0, num_steps=self.config.get("inference", {}).get("num_steps")
+        ))
 
     def close(self) -> None:
         self._loaded = False

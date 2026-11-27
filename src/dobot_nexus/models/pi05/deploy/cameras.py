@@ -18,7 +18,9 @@ def artifact_camera_mapping(policy, camera_mapping=None):
         config = {}
     if camera_mapping is None:
         camera_mapping = config.get("server", {}).get("camera_mapping")
-    model_config = getattr(model, "pi05_config", None)
+    provider = getattr(model, "provider", None)
+    provider_config = getattr(provider, "pi05_config", None)
+    model_config = provider_config or getattr(model, "pi05_config", None)
     cameras = getattr(model_config, "camera_mapping", PUBLIC_CAMERA_TO_CORE)
     slots = set(cameras.values())
     if not slots or len(slots) != len(cameras) or not slots.issubset(PUBLIC_CAMERA_TO_CORE.values()):
@@ -29,7 +31,15 @@ def artifact_camera_mapping(policy, camera_mapping=None):
         raise ValueError("Artifact public cameras must match the model camera slots.")
     if camera_mapping is not None:
         return camera_mapping
-    fields = config.get("data", {}).get("field_mapping", {})
+    fields = {}
+    outer_configs = (config, getattr(model, "root_config", None))
+    provider_configs = (getattr(model, "provider_config", None), getattr(provider, "root_config", None))
+    sources = provider_configs + outer_configs if provider_config is not None else outer_configs + provider_configs
+    for saved in sources:
+        if isinstance(saved, Mapping):
+            fields = saved.get("data", {}).get("field_mapping", {})
+            if "images" in fields:
+                break
     if "images" not in fields and all(PUBLIC_CAMERA_TO_CORE.get(name) == slot
                                       for name, slot in cameras.items()):
         return {wire: name for wire, name in OPENPI_TO_NEXUS_IMAGES.items() if name in cameras}

@@ -60,6 +60,8 @@ __all__ = [
 class NexusOpenPiPolicy(_NexusOpenPiPolicy):
     def __init__(self, policy, *, camera_mapping=None, **kwargs):
         cameras = artifact_camera_mapping(policy, camera_mapping)
+        inference = getattr(getattr(policy, "config", None), "inference", None)
+        kwargs.setdefault("num_steps", getattr(inference, "num_steps", 10))
         super().__init__(policy, camera_mapping=cameras, **kwargs)
 
 
@@ -80,6 +82,7 @@ def _load_policy(args: argparse.Namespace) -> Any:
     target = model.get("target", "")
     profiles = {
         "dobot_nexus.models.pi05.modeling_pi05:Pi05Model": "pi05.yaml",
+        "dobot_nexus.algorithms.rltoken.policy:RLTokenPolicy": "pi05_rltoken.yaml",
         **dict.fromkeys(POLICY_TARGETS, "pi05_recap.yaml"),
         "dobot_nexus.models.pi05.memory.modeling_memory:Pi05MemoryModel": "pi05_memory.yaml",
     }
@@ -97,9 +100,10 @@ def _load_policy(args: argparse.Namespace) -> Any:
         f"model.target={target}",
         f"runtime.device={args.device}",
         f"model.inference_backend={args.backend}",
-        f"inference.num_steps={args.num_steps}",
         f"inference.seed={args.seed}",
     ]
+    if args.num_steps is not None:
+        overrides.append(f"inference.num_steps={args.num_steps}")
     if args.recap_condition is not None:
         overrides.append(f"inference.recap.condition={args.recap_condition}")
     for argument, key in (("torch_compile", "compile"), ("cuda_graph", "cuda_graph"),
@@ -109,6 +113,8 @@ def _load_policy(args: argparse.Namespace) -> Any:
             overrides.append(f"runtime.{key}={str(value).lower()}")
     with config_context as config_path:
         config = load_config(config_path, overrides, expected_task="infer")
+    if profiles[target] == "pi05_rltoken.yaml":
+        config.setdefault("inference", {}).setdefault("num_steps", None)
     logging.info("Inference profile: %s; RECAP condition: %s", args.config or profiles[target],
                  config.inference.get("recap", {}).get("condition"))
     return load_policy(config)
@@ -116,6 +122,8 @@ def _load_policy(args: argparse.Namespace) -> Any:
 
 def run_server(args: argparse.Namespace) -> None:
     policy = _load_policy(args)
+    inference = getattr(getattr(policy, "config", None), "inference", None)
+    num_steps = args.num_steps if args.num_steps is not None else getattr(inference, "num_steps", 10)
     if getattr(policy.model, "memory_config", None) is not None:
         from dobot_nexus.models.pi05.deploy.memory_server import (
             MemoryWebsocketServer,
@@ -126,7 +134,7 @@ def run_server(args: argparse.Namespace) -> None:
         server = MemoryWebsocketServer(
             policy, build_frame_encoder(policy), policy.model.memory_config,
             execute_steps=int(policy.config.inference.execute_steps),
-            num_steps=args.num_steps, host=args.host, port=args.port,
+            num_steps=num_steps, host=args.host, port=args.port,
             seed=args.seed, vary_seed=args.vary_seed, default_prompt=args.default_prompt,
             warmup=args.warmup,
             **configured_memory_limits(policy.config),
@@ -139,7 +147,7 @@ def run_server(args: argparse.Namespace) -> None:
     adapter = NexusOpenPiPolicy(
         policy,
         seed=args.seed,
-        num_steps=args.num_steps,
+        num_steps=num_steps,
         vary_seed=args.vary_seed,
         default_prompt=args.default_prompt,
         camera_mapping=cameras,
@@ -177,7 +185,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--artifact", required=True)
     parser.add_argument(
         "--config",
-        help="Inference YAML; defaults to the BC, RECAP or Memory profile from the Artifact."
+        help="Inference YAML; defaults to the BC, RECAP, Memory or RLToken profile from the Artifact."
     )
     parser.add_argument("--recap-condition", choices=("base", "positive", "negative"),
                         help="Override RECAP conditioning; the shipped profile defaults to base.")
@@ -196,7 +204,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--num-steps", type=int, default=10)
+    parser.add_argument("--num-steps", type=int, help="Override inference.num_steps from the profile.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--fixed-seed",
@@ -208,7 +216,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-warmup", dest="warmup", action="store_false")
     parser.set_defaults(vary_seed=True, warmup=True)
     args = parser.parse_args(argv)
-    if args.port <= 0 or args.gpu < 0 or args.num_steps <= 0:
+    if args.port <= 0 or args.gpu < 0 or (args.num_steps is not None and args.num_steps <= 0):
         parser.error("port/num-steps must be positive and gpu must be non-negative")
     return args
 
