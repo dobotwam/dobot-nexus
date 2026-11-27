@@ -27,7 +27,7 @@ def dataset(root, *, reverse_meta=False, split=False):
     image = io.BytesIO()
     Image.new('RGB', (2, 2)).save(image, format='PNG')
     rows = [{'episode_index': i//2, 'frame_index': i%2, 'task_index': 0,
-             'action': [float(i if i < 2 else 100+i)], 'state': [0.],
+             'action': [float(i if i < 2 else 100+i)], 'state': [float(i)], 'timestamp': (i % 2) / 10,
              'image': {'bytes': image.getvalue()}} for i in range(4)]
     chunks = [rows[:1], rows[1:3], rows[3:]] if split else [rows]
     for i, chunk in enumerate(chunks):

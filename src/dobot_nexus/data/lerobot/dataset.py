@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from copy import copy
+from dataclasses import dataclass, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
+from dobot_nexus.data.images import image_uint8
 from dobot_nexus.data.lerobot.metadata import format_version, load_info, load_jsonl
 
 
@@ -107,6 +109,41 @@ class _LocalV21Metadata:
     tasks: dict[int, str]
 
 
+def _encoded_hf_feature(feature):
+    """Keep the HF schema and container types, replacing active media decoders."""
+    if isinstance(feature, Mapping):
+        children = {key: _encoded_hf_feature(value) for key, value in feature.items()}
+        if any(child is not feature[key] for key, child in children.items()):
+            return type(feature)(children)
+    elif isinstance(feature, (list, tuple)):
+        children = [_encoded_hf_feature(value) for value in feature]
+        if any(a is not b for a, b in zip(children, feature)):
+            return type(feature)(children)
+    else:
+        changes = {}
+        for key in ("feature", "features"):
+            child = getattr(feature, key, None)
+            encoded = _encoded_hf_feature(child) if child is not None else None
+            if encoded is not child:
+                changes[key] = encoded
+        if hasattr(feature, "decode") or hasattr(feature, "decode_example"):
+            if not hasattr(feature, "decode"):
+                raise ValueError(f"Cannot disable HF decoding for {type(feature).__name__}.")
+            if feature.decode is not False:
+                changes["decode"] = False
+        if changes:
+            try:
+                if is_dataclass(feature):
+                    return replace(feature, **changes)
+                result = copy(feature)
+                for key, value in changes.items():
+                    setattr(result, key, value)
+                return result
+            except (TypeError, AttributeError, ValueError) as exc:
+                raise ValueError(f"Cannot disable HF decoding for {type(feature).__name__}.") from exc
+    return feature
+
+
 class LocalLeRobotV21Dataset(torch.utils.data.Dataset):
     """Read immutable local LeRobot v2.1 data with current dependencies."""
 
@@ -154,23 +191,46 @@ class LocalLeRobotV21Dataset(torch.utils.data.Dataset):
         if not data_root.is_dir():
             raise FileNotFoundError(f"LeRobot v2.1 data directory not found: {data_root}.")
         self.hf_dataset = load_dataset("parquet", data_dir=str(data_root), split="train")
+        # HF Image normally opens path-backed cells while materializing a row.
+        # Take ownership of that decode so every image path passes the dataset-root check.
+        self.hf_image_keys = []
+        features = getattr(self.hf_dataset, "features", {})
+        if features:
+            from datasets import Image
+
+            for key, feature in features.items():
+                encoded = _encoded_hf_feature(feature)
+                if encoded is not feature:
+                    self.hf_dataset = self.hf_dataset.cast_column(key, encoded)
+                if isinstance(feature, Image) and feature.decode:
+                    self.hf_image_keys.append(key)
+            for key, feature in self.hf_dataset.features.items():
+                if _encoded_hf_feature(feature) is not feature:
+                    raise ValueError(f"HF column {key!r} still enables media decoding.")
         # Selecting columns before indexing avoids decoding future camera frames
         # when assembling an action chunk from image-backed datasets.
         self.action_dataset = self.hf_dataset.select_columns([self.action_key])
 
         episodes = load_jsonl(self.root / "meta" / "episodes.jsonl")
-        self.episode_bounds: dict[int, tuple[int, int]] = {}
-        cursor = 0
-        for episode in episodes:
-            episode_index = int(episode["episode_index"])
-            length = int(episode["length"])
-            self.episode_bounds[episode_index] = (cursor, cursor + length)
-            cursor += length
-        if cursor != len(self.hf_dataset):
-            raise ValueError(
-                "LeRobot v2.1 episode lengths do not match parquet rows: "
-                f"metadata={cursor}, parquet={len(self.hf_dataset)}."
-            )
+        lengths = {e["episode_index"]: e["length"] for e in episodes}
+        if len(lengths) != len(episodes):
+            raise ValueError("Duplicate episode_index in episodes.jsonl.")
+        columns = ["episode_index"]
+        if "frame_index" in self.hf_dataset.column_names:
+            columns.append("frame_index")
+        indices = self.hf_dataset.select_columns(columns)
+        self.episode_bounds = {}
+        # Iterate only scalar index columns, in the physical order used by __getitem__.
+        for row, entry in enumerate(indices):
+            episode = entry["episode_index"]
+            start, end = self.episode_bounds.get(episode, (row, row))
+            if end != row:
+                raise ValueError(f"Split Parquet episode {episode}.")
+            if "frame_index" in entry and entry["frame_index"] != row - start:
+                raise ValueError(f"Non-contiguous frame_index in episode {episode}.")
+            self.episode_bounds[episode] = (start, row + 1)
+        if {e: end - start for e, (start, end) in self.episode_bounds.items()} != lengths:
+            raise ValueError("Parquet episodes and lengths must exactly match episodes.jsonl.")
 
         tasks = {
             int(item["task_index"]): str(item["task"])
@@ -183,6 +243,8 @@ class LocalLeRobotV21Dataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         item = dict(self.hf_dataset[int(index)])
+        for key in self.hf_image_keys:
+            item[key] = image_uint8(item[key], root=self.root)
         episode_index = int(item["episode_index"])
         try:
             episode_start, episode_end = self.episode_bounds[episode_index]
@@ -230,7 +292,8 @@ def episode_indices(source, episode_ids):
     dataset = getattr(source, "dataset", source)
     bounds = getattr(dataset, "episode_bounds", None)
     metadata = Path(getattr(source, "dataset_root", ".")) / "meta/episodes.jsonl"
-    if bounds is None and metadata.is_file():
+    table = getattr(dataset, "hf_dataset", None)
+    if bounds is None and table is None and metadata.is_file():
         bounds, cursor = {}, 0
         for episode in load_jsonl(metadata):
             length = int(episode["length"])
@@ -242,12 +305,18 @@ def episode_indices(source, episode_ids):
         missing = wanted - set(bounds)
         indices = [i for episode in sorted(wanted & set(bounds)) for i in range(*bounds[episode])]
     else:
-        table = getattr(dataset, "hf_dataset", None)
         if table is None:
             raise ValueError("Dataset must expose episode bounds or an episode_index column.")
-        column = [int(value) for value in table["episode_index"]]
-        missing = wanted - set(column)
-        indices = [i for i, episode in enumerate(column) if episode in wanted]
+        cached = getattr(dataset, "_episode_rows_by_id", None)
+        if cached is None or cached[0] is not table:
+            rows = {}
+            for index, episode in enumerate(table["episode_index"]):
+                rows.setdefault(int(episode), []).append(index)
+            dataset._episode_rows_by_id = table, rows
+        else:
+            rows = cached[1]
+        missing = [episode for episode in wanted if episode not in rows]
+        indices = sorted(index for episode in wanted for index in rows.get(episode, ()))
     if missing:
         raise ValueError(f"Unknown episode IDs: {sorted(missing)}")
     return indices

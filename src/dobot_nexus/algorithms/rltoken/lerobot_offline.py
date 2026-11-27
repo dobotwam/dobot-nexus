@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -13,11 +14,30 @@ from dobot_nexus.data.lerobot.dataset import LeRobotSource, episode_indices
 from .offline_data import Episode
 
 
+def _unique_fields(pairs):
+    fields = dict(pairs)
+    if len(fields) != len(pairs):
+        raise ValueError("Duplicate key in episode labels.")
+    return fields
+
+
+def _episode_labels(path):
+    raw = json.loads(Path(path).read_text(), object_pairs_hook=_unique_fields)
+    if not isinstance(raw, dict):
+        raise ValueError("Episode labels must be an object keyed by episode ID.")
+    labels = {}
+    for key, label in raw.items():
+        if not re.fullmatch(r"0|[1-9][0-9]*", key):
+            raise ValueError(f"Invalid episode ID {key!r}; expected a canonical nonnegative integer.")
+        labels[int(key)] = label
+    return labels
+
+
 def read_episodes(config):
     if config.get("last_frame_is_final_observation") is not True:
         raise ValueError("Declare last_frame_is_final_observation=true only for datasets that store it; "
                          "otherwise supply a reader with actual post-action observations.")
-    labels = json.loads(Path(config.episode_labels).read_text())
+    labels = _episode_labels(config.episode_labels)
     source = LeRobotSource(data_path=config.path, action_key=config.action_key,
         language_key=config.get("language_key"), action_horizon=1,
         format_version_name=config.get("format_version", "auto"), fps=config.get("fps"),
@@ -25,8 +45,11 @@ def read_episodes(config):
     for identity, label in labels.items():
         if not label.get("accepted", True):
             continue
-        indices = episode_indices(source, [int(identity)])
+        indices = episode_indices(source, [identity])
         frames = [source[i] for i in indices]
+        if any("episode_index" in frame and int(frame["episode_index"]) != identity
+               for frame in frames):
+            raise ValueError(f"Offline frames disagree with episode label {identity}.")
         if len(frames) < 2:
             raise ValueError("Offline episodes need execution frames and a final observation.")
         observations = [ObservationBatch(
