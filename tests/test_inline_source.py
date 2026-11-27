@@ -10,6 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from PIL import Image
 
+from dobot_nexus.data.lerobot.dataset import episode_indices
 from dobot_nexus.data.lerobot.source import ImageLeRobotSource
 
 
@@ -51,6 +52,15 @@ class InlineSourceTest(unittest.TestCase):
                     self.assertEqual(row.call_count, 1)
                     self.assertEqual(item['image'].shape, (2, 2, 3))
                 np.testing.assert_array_equal(reader[2]['action'][:, 0], [102, 103, 103, 103])
+
+    def test_episode_split_uses_parquet_rows_with_unordered_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset(root, reverse_meta=True, split=True)
+            reader = source(root)
+            with patch.object(reader, '_row', side_effect=AssertionError("decoded a frame")):
+                self.assertEqual(episode_indices(reader, [0]), [0, 1])
+                self.assertEqual(episode_indices(reader, [1]), [2, 3])
 
     def test_invalid_frame_metadata_or_task_is_rejected_at_construction(self):
         for field, value in [('frame_index', 8), ('episode_index', 2), ('task_index', 99)]:

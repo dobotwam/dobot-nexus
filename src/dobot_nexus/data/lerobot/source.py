@@ -96,6 +96,8 @@ class ImageLeRobotSource(torch.utils.data.Dataset):
             self.ends[current] = cursor
         if set(self.ends) != set(lengths) or cursor != len(self):
             raise ValueError("Episode metadata does not match inline-image rows.")
+        # Whole-episode subsets use the verified Parquet row order, including across shards.
+        self.episode_bounds = {ep: (end - lengths[ep], end) for ep, end in self.ends.items()}
         self.cache, self.image_cache = OrderedDict(), OrderedDict()
         self.cache_capacity = 2
         self.group_starts = []
