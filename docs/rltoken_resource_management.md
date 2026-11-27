@@ -60,8 +60,10 @@ Rollout 共用或使用另一张设备，需合计模型、渲染和物理状态
 Learner Worker 每次先取一条数据消息、持久提交并返回 ACK，再执行有限次更新。
 当前没有专用接收线程，没有启用 Learner 预取；相关有界队列与采样 RNG 设计见 TODO。
 
-Replay 的 count/bytes 限制只作用于热数据。journal、去重索引与旧 checkpoint/deployment
-尚无自动清理策略，部署前需按任务长度估算磁盘占用。
+Replay 的 count/bytes 限制只作用于热数据。旧 checkpoint 与 deployment 可通过
+`train.keep_last_checkpoints` 和 `train.keep_last_deployments` 按指针优先顺序安全旋转，
+且部署产物默认通过 hardlink 复用 run 级只读密封的 `rltoken/features`（跨设备回退拷贝）。
+`journal.sqlite` 与去重索引尚无自动裁切策略，长跑任务仍需结合日志体积估算磁盘占用。
 UTD 由唯一准入 transition 驱动；GPU 空闲不会额外增加更新预算。
 
 Actor 同步先生成完整不可变 CPU 快照，再校验身份、摘要、shape、dtype 与有限值，

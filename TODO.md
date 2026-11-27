@@ -189,12 +189,15 @@
 
 - [ ] **RLT-RETENTION：约束日志和训练产物的磁盘增长**
 
-  Replay 的 count/bytes 上限仅约束热数据，SQLite 事件日志和旧 checkpoint/deployment
-  尚无保留策略。设计容量预算、归档/清理条件和磁盘不足行为，保留去重身份、checkpoint
-  watermark 后的恢复事件、活动指针及其引用的冻结特征资产。
+  Replay 的 count/bytes 上限仅约束热数据。旧 checkpoint/deployment 的保留旋转
+  （`train.keep_last_checkpoints` / `train.keep_last_deployments`）、run 级只读密封
+  `rltoken/features`（剔除训练专用 `token_decoder.*`）以及部署产物对冻结特征的
+  hardlink 复用已落地并通过 CPU 契约测试与真实 GPU 验证；SQLite 事件日志
+  （`journal.sqlite`）压缩/归档与磁盘不足行为仍待补齐。
 
   验收：清理后当前恢复点和保留恢复点均可加载；重复 transition 不再计预算；写入或清理
-  中断不产生悬空指针；不会删除仍被引用的资产。磁盘压力与长时间运行测试留在本地工具中。
+  中断不产生悬空指针；不会删除仍被引用的资产；后续补齐 `journal.sqlite` 按
+  checkpoint watermark 裁切且保留去重身份。磁盘压力与长时间运行测试留在本地工具中。
   入口：[replay.py](src/dobot_nexus/algorithms/rltoken/replay.py)、
   [checkpoint.py](src/dobot_nexus/algorithms/rltoken/checkpoint.py)、
   [artifacts.py](src/dobot_nexus/algorithms/rltoken/artifacts.py)。

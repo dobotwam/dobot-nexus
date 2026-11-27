@@ -182,11 +182,17 @@ reward 再覆盖。阶段范围排除的记录不进入 pending。具体控制�
 输出位于 `<run_dir>/rltoken/`：
 
 - `journal.sqlite`：全量持久事件和去重索引，Replay 的 count/bytes 上限只限制热数据。
-  首版不自动清理 journal 或旧 checkpoint，需按任务长度安排磁盘空间。
-- `features/`：首次初始化从当前已加载提供者导出的固定特征资产，无需原 Stage 1 目录。
+  当前不自动裁切 `journal.sqlite`，长跑任务需按日志量预留磁盘空间。
+- `features/`：首次初始化从已验证的提供者导出并只读密封的固定特征资产（含
+  `features.sha256` 校验清单，剔除训练专用 `token_decoder.*`），无需原 Stage 1 目录。
 - `checkpoints/step-*/`：私有 `rltoken_resume_v1`，包含 Actor/Q/Target、双优化器与
-  scheduler、RNG、Replay、预算和 journal 备份；manifest 引用保留的 `features/`。
-- `deployments/actor-*/`：公开 v2 Artifact，含 Actor 和独立嵌套特征包，不含 Q/Replay。
+  scheduler、RNG、Replay、预算和 journal 备份；manifest 绑定并校验 `features/` 摘要。
+  可通过 `train.keep_last_checkpoints`（`null` 表示不限制，正整数表示保留最近 N 份）
+  在更新 `latest_resume` 指针后安全旋转旧目录。
+- `deployments/actor-*/`：公开 v2 Artifact，含 Actor 和嵌套特征包，不含 Q/Replay；
+  同文件系统下通过 hardlink 复用密封的 `features/`（跨文件系统或无权限时自动回退拷贝）。
+  可通过 `train.keep_last_deployments`（`null` 或正整数）在更新 `latest_deployment.txt`
+  后安全旋转旧部署。
 - `checkpoints/latest_resume`、`latest_deployment.txt`：只指向写完的产物；Actor 未就绪
   时仍可保存恢复点，但不发布部署指针。
 
