@@ -35,6 +35,36 @@ class DurableAck:
     digest: str
 
 
+class _IndexedRing:
+    """A FIFO with amortized constant-time append and constant-time random access."""
+
+    def __init__(self):
+        self._slots = [None] * 8
+        self._head = self._size = 0
+
+    def __len__(self):
+        return self._size
+
+    def __getitem__(self, index):
+        if not 0 <= index < self._size:
+            raise IndexError(index)
+        return self._slots[(self._head + index) % len(self._slots)]
+
+    def append(self, row):
+        if self._size == len(self._slots):
+            self._slots = [self[i] for i in range(self._size)] + [None] * self._size
+            self._head = 0
+        self._slots[(self._head + self._size) % len(self._slots)] = row
+        self._size += 1
+
+    def popleft(self):
+        row = self[0]
+        self._slots[self._head] = None
+        self._head = (self._head + 1) % len(self._slots)
+        self._size -= 1
+        return row
+
+
 class Replay:
     def __init__(
         self,
@@ -104,7 +134,32 @@ class Replay:
         self.bytes = self.budget = self.watermark = self.admitted = self.online_admitted = 0
         self.status_counts = {"pending": 0, "admitted": 0, "rejected": 0}
         self.generator = torch.Generator().manual_seed(seed)
+        self._rebuild_rings()
         self._replay_after(0)
+
+    def _rebuild_rings(self):
+        if self.sampling == "uniform":
+            self._ring = _IndexedRing()
+            for row, _ in self.rows.values():
+                self._ring.append(row)
+        else:
+            self._demo_ring, self._online_ring = _IndexedRing(), _IndexedRing()
+            self._demo_bytes = self._online_bytes = 0
+            for row, size in self.rows.values():
+                if self.is_demo(row):
+                    self._demo_ring.append(row)
+                    self._demo_bytes += size
+                else:
+                    self._online_ring.append(row)
+                    self._online_bytes += size
+
+    def _append_bounded(self, ring, row, pool_bytes, capacity, byte_limit):
+        ring.append(row)
+        while len(ring) > capacity or pool_bytes > byte_limit:
+            _, size = self.rows.pop(ring.popleft().key)
+            self.bytes -= size
+            pool_bytes -= size
+        return pool_bytes
 
     def _check_episode_outcome(self, row, status, reason) -> bool | None:
         """Return the finalized label, including feedback from outside the training scope."""
@@ -135,20 +190,18 @@ class Replay:
             if row.origin not in {"demo", "vla"}:
                 self.budget += self.utd
                 self.online_admitted += 1
-            if self.sampling == "demo_joint_50":
-                for demo, capacity, byte_limit in ((True, self.demo_capacity, self.demo_max_bytes),
-                                                   (False, self.capacity, self.max_bytes)):
-                    keys = [k for k, (r, _) in self.rows.items() if self.is_demo(r) == demo]
-                    pool_bytes = sum(self.rows[k][1] for k in keys)
-                    while len(keys) > capacity or pool_bytes > byte_limit:
-                        key = keys.pop(0)
-                        _, size = self.rows.pop(key)
-                        self.bytes -= size
-                        pool_bytes -= size
-                return
-            while len(self.rows) > self.capacity or self.bytes > self.max_bytes:
-                _, (_, size) = self.rows.popitem(last=False)
-                self.bytes -= size
+            if self.sampling == "uniform":
+                self._append_bounded(self._ring, row, self.bytes, self.capacity, self.max_bytes)
+            elif self.is_demo(row):
+                self._demo_bytes = self._append_bounded(
+                    self._demo_ring, row, self._demo_bytes + size,
+                    self.demo_capacity, self.demo_max_bytes,
+                )
+            else:
+                self._online_bytes = self._append_bounded(
+                    self._online_ring, row, self._online_bytes + size,
+                    self.capacity, self.max_bytes,
+                )
 
     def _replay_after(self, watermark):
         if watermark == 0:
@@ -236,18 +289,23 @@ class Replay:
         return row.origin == "demo" or bool(row.takeover.any()) or row.source == "human"
 
     def sample(self, batch_size):
+        return [row.cpu_copy() for row in self._sample_views(batch_size)]
+
+    def _sample_views(self, batch_size):
+        """Borrow rows for read-only collation by the single Replay owner."""
         if not self.rows or batch_size <= 0:
             raise ValueError("Cannot sample empty Replay or nonpositive batch size.")
-        rows = list(self.rows.values())
+
+        def draw(pool, count):
+            indices = torch.randint(len(pool), (count,), generator=self.generator).tolist()
+            return [pool[i] for i in indices]
+
         if self.sampling == "demo_joint_50":
-            demo = [r for r in rows if self.is_demo(r[0])]
-            joint = [r for r in rows if not self.is_demo(r[0])]
-            pools = [(demo or joint, batch_size // 2), (joint or demo, batch_size - batch_size // 2)]
-            selected = [pool[i][0].cpu_copy() for pool, count in pools for i in
-                        torch.randint(len(pool), (count,), generator=self.generator).tolist()]
+            half = batch_size // 2
+            selected = draw(self._demo_ring or self._online_ring, half)
+            selected.extend(draw(self._online_ring or self._demo_ring, batch_size - half))
         else:
-            indices = torch.randint(len(rows), (batch_size,), generator=self.generator).tolist()
-            selected = [rows[index][0].cpu_copy() for index in indices]
+            selected = draw(self._ring, batch_size)
         self.last_sample_demo_fraction = sum(self.is_demo(row) for row in selected) / batch_size
         return [
             replace(row, episode_success=self.episode_outcomes[row.observation_id.session])
@@ -257,24 +315,30 @@ class Replay:
         ]
 
     def state_dict(self):
-        return copy.deepcopy(
-            {
-                "identity": self.identity,
-                "rows": self.rows,
-                "episode_outcomes": self.episode_outcomes,
-                "episode_outcomes_version": 2,
-                "bytes": self.bytes,
-                "budget": self.budget,
-                "watermark": self.watermark,
-                "watermark_digest": self._watermark_digest(self.watermark),
-                "admitted": self.admitted,
-                "online_admitted": self.online_admitted,
-                "status_counts": self.status_counts,
-                "rng": self.generator.get_state(),
-            }
-        )
+        return copy.deepcopy(self._checkpoint_state_dict())
+
+    def _checkpoint_state_dict(self):
+        """Borrow row payloads only for synchronous serialization at an update barrier."""
+        return {
+            "identity": self.identity,
+            "rows": OrderedDict(self.rows),
+            "episode_outcomes": dict(self.episode_outcomes),
+            "episode_outcomes_version": 2,
+            "bytes": self.bytes,
+            "budget": self.budget,
+            "watermark": self.watermark,
+            "watermark_digest": self._watermark_digest(self.watermark),
+            "admitted": self.admitted,
+            "online_admitted": self.online_admitted,
+            "status_counts": dict(self.status_counts),
+            "rng": self.generator.get_state().clone(),
+        }
 
     def load_state_dict(self, state):
+        self._load_checkpoint_state_dict(copy.deepcopy(state))
+
+    def _load_checkpoint_state_dict(self, state):
+        """Take ownership of row payloads from a freshly deserialized private snapshot."""
         if state["identity"] != self.identity:
             raise ValueError("Replay checkpoint identity mismatch.")
         latest = self.connection.execute("SELECT COALESCE(MAX(sequence),0) FROM events").fetchone()[
@@ -284,8 +348,10 @@ class Replay:
             raise ValueError("Replay journal is missing checkpoint records.")
         if self._watermark_digest(state["watermark"]) != state["watermark_digest"]:
             raise ValueError("Replay journal checkpoint watermark does not match.")
-        for name in ("rows", "bytes", "budget", "watermark", "admitted", "status_counts"):
-            setattr(self, name, copy.deepcopy(state[name]))
+        self.rows = OrderedDict(state["rows"])
+        self.status_counts = dict(state["status_counts"])
+        for name in ("bytes", "budget", "watermark", "admitted"):
+            setattr(self, name, state[name])
         self.online_admitted = state.get("online_admitted", state["admitted"])
         if state.get("episode_outcomes_version") == 2 and "episode_outcomes" in state:
             self.episode_outcomes = dict(state["episode_outcomes"])
@@ -300,6 +366,7 @@ class Replay:
             ):
                 self._index_episode_outcome(_load(payload), status, reason)
         self.generator.set_state(state["rng"])
+        self._rebuild_rings()
         self._replay_after(self.watermark)
 
     def _watermark_digest(self, sequence):

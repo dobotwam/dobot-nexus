@@ -47,7 +47,7 @@ def save_prewarm(path, learner, *, feature_manifest, task_identity, cache_id, me
         cache_id=cache_id,
         feature_manifest=feature_manifest,
         metrics=dict(metrics or {}),
-        state=learner.state_dict(),
+        state=learner._checkpoint_state_dict(),
     )
     path = Path(path)
     temporary = path.with_name("." + path.name + "-" + uuid.uuid4().hex)
@@ -223,7 +223,7 @@ class RLTokenPrewarmTrainer:
             metrics = {}
             checkpoint = str(resume or "")
             while learner.update_step < cfg.train.max_steps:
-                metrics = learner.train_rows(replay.sample(self.learning.batch_size))
+                metrics = learner.train_rows(replay._sample_views(self.learning.batch_size))
                 if (
                     learner.update_step % cfg.train.save_every
                     and learner.update_step != cfg.train.max_steps

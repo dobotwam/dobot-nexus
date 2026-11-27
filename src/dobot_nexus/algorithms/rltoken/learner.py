@@ -67,7 +67,7 @@ class Learner:
             return
         for _ in range(count):
             rng = self.replay.generator.get_state().clone()
-            self.prefetched.append((rng, self.replay.sample(self.config.batch_size)))
+            self.prefetched.append((rng, self.replay._sample_views(self.config.batch_size)))
 
     def barrier(self):
         """Discard speculative samples and rewind their RNG in the continuing run too."""
@@ -108,7 +108,7 @@ class Learner:
             rows = (
                 self.prefetched.popleft()[1]
                 if self.prefetched
-                else self.replay.sample(self.config.batch_size)
+                else self.replay._sample_views(self.config.batch_size)
             )
             batch = training_batch(rows, self.heads.chunk_size, self.device)
             try:
@@ -165,13 +165,18 @@ class Learner:
         }
 
     def state_dict(self):
+        result = self._checkpoint_state_dict()
+        result["replay"] = copy.deepcopy(result["replay"])
+        return result
+
+    def _checkpoint_state_dict(self):
         self.barrier()
         result = {
             "fingerprint": self.fingerprint,
             "critic_updates": self.critic_updates,
             "actor_updates": self.actor_updates,
             "generator": self.generator.get_state(),
-            "replay": self.replay.state_dict(),
+            "replay": self.replay._checkpoint_state_dict(),
         }
         for name in (
             "actor",
@@ -182,10 +187,13 @@ class Learner:
             "actor_scheduler",
             "critic_scheduler",
         ):
-            result[name] = getattr(self, name).state_dict()
-        return copy.deepcopy(result)
+            result[name] = copy.deepcopy(getattr(self, name).state_dict())
+        return result
 
     def load_state_dict(self, state):
+        self._load_checkpoint_state_dict(copy.deepcopy(state))
+
+    def _load_checkpoint_state_dict(self, state):
         self._healthy()
         if self.fingerprint != state["fingerprint"]:
             raise ValueError("RLToken learning recipe or feature fingerprint mismatch.")
@@ -202,7 +210,7 @@ class Learner:
             getattr(self, name).load_state_dict(state[name])
         self.critic_updates, self.actor_updates = state["critic_updates"], state["actor_updates"]
         self.generator.set_state(state["generator"].cpu())
-        self.replay.load_state_dict(state["replay"])
+        self.replay._load_checkpoint_state_dict(state["replay"])
 
 
 def create_learner(spec, heads, config, replay, **kwargs):

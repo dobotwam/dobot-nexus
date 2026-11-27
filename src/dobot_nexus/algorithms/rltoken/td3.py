@@ -252,7 +252,7 @@ class TD3Learner(Learner):
             rows = (
                 self.prefetched.popleft()[1]
                 if self.prefetched
-                else self.replay.sample(self.config.batch_size)
+                else self.replay._sample_views(self.config.batch_size)
             )
             metrics = self.train_rows(rows)
             self.replay.budget -= 1
@@ -278,8 +278,8 @@ class TD3Learner(Learner):
             },
         )
 
-    def state_dict(self):
-        result = super().state_dict()
+    def _checkpoint_state_dict(self):
+        result = super()._checkpoint_state_dict()
         result.update(
             format=self.resume_format,
             target_actor=copy.deepcopy(self.target_actor.state_dict()),
@@ -292,7 +292,7 @@ class TD3Learner(Learner):
         )
         return result
 
-    def load_state_dict(self, state):
+    def _load_checkpoint_state_dict(self, state):
         if (
             state.get("format") != self.resume_format
             or state.get("fingerprint") != self.fingerprint
@@ -315,7 +315,7 @@ class TD3Learner(Learner):
             and rollout_rng.numel() > 0
         ):
             raise ValueError("TD3 rollout_rng must contain a generator state or None.")
-        super().load_state_dict(state)
+        super()._load_checkpoint_state_dict(state)
         self.target_actor.load_state_dict(state["target_actor"], strict=True)
         self.noise_generator.set_state(state["noise_generator"].cpu())
         for name in (

@@ -231,20 +231,62 @@ def training_batch(rows, chunk_size, device):
 
 
 def residual_batch(rows, chunk_size, device):
-    batch = training_batch(rows, chunk_size, device)
-    reference = torch.cat([r.features.reference_actions[:, :chunk_size] for r in rows]).to(device)
-    batch["reference_condition"] = reference
-    batch["valid_mask"] = torch.cat([r.executed.executed_mask for r in rows]).to(device)
-    batch["episode_success"] = torch.tensor(
-        [bool(r.episode_success) for r in rows], device=device, dtype=torch.bool
-    )
-    batch["episode_success_known"] = torch.tensor(
-        [r.episode_success is not None for r in rows], device=device, dtype=torch.bool
-    )
-    batch["terminated"] = ~batch["bootstrap"]
-    batch["truncated"] = torch.tensor([bool(r.truncated) for r in rows], device=device)
-    batch["intervene_flags"] = torch.stack([r.takeover for r in rows]).to(device)
-    return batch
+    latent, state, reference = [], [], []
+    executed, critic_actions, valid, rewards, takeover = [], [], [], [], []
+    terminated, truncated, success, known = [], [], [], []
+    next_latent, next_state, next_reference, next_enabled = [], [], [], []
+    for row in rows:
+        latent.append(row.features.latent)
+        state.append(row.features.state)
+        reference.append(row.features.reference_actions[:, :chunk_size])
+        actions, mask = row.executed.actions, row.executed.executed_mask
+        executed.append(actions)
+        valid.append(mask)
+        if row.terminated and not mask.all():
+            actions = torch.where(mask[..., None], actions, row.terminal_candidate_actions)
+        critic_actions.append(actions)
+        rewards.append(row.rewards)
+        takeover.append(row.takeover)
+        terminated.append(bool(row.terminated))
+        truncated.append(bool(row.truncated))
+        success.append(bool(row.episode_success))
+        known.append(row.episode_success is not None)
+        if not row.terminated:
+            packet = row.next_features
+            next_latent.append(packet.latent)
+            next_state.append(packet.state)
+            next_reference.append(packet.reference_actions)
+            next_enabled.append(row.next_actor_enabled is not False)
+
+    def cat(tensors):
+        return torch.cat(tensors).to(device)
+
+    def flags(values):
+        return torch.tensor(values, device=device, dtype=torch.bool)
+
+    reference_batch, executed_batch = cat(reference), cat(executed)
+    intervene_flags = torch.stack(takeover).to(device)
+    terminal = flags(terminated)
+    return {
+        "latent": cat(latent),
+        "state": cat(state),
+        "executed": executed_batch,
+        "critic_actions": cat(critic_actions),
+        "reference_condition": reference_batch,
+        "bc_target": torch.where(intervene_flags[..., None], executed_batch, reference_batch),
+        "rewards": torch.stack(rewards).to(device),
+        "bootstrap": ~terminal,
+        "next_latent": cat(next_latent) if next_latent else None,
+        "next_state": cat(next_state) if next_state else None,
+        "next_reference": cat(next_reference) if next_reference else None,
+        "next_actor_enabled": flags(next_enabled),
+        "valid_mask": cat(valid),
+        "episode_success": flags(success),
+        "episode_success_known": flags(known),
+        "terminated": terminal,
+        "truncated": flags(truncated),
+        "intervene_flags": intervene_flags,
+    }
 
 
 @dataclass(frozen=True)
