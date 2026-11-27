@@ -11,7 +11,6 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 RUN_NAME=""
 OUTPUT_DIR=""
 DRY_RUN=0
-OVERRIDES=()
 
 usage() {
   printf '%s\n' \
@@ -42,7 +41,7 @@ while [[ $# -gt 0 ]]; do
     --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    --) shift; OVERRIDES=("$@"); break ;;
+    --) shift; break ;;
     *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
@@ -78,10 +77,10 @@ if [[ ! -f "${CONFIG}" ]]; then
 fi
 
 if [[ -n "${RUN_NAME}" ]]; then
-  OVERRIDES+=("exp.name=${RUN_NAME}")
+  set -- "$@" "exp.name=${RUN_NAME}"
 fi
 if [[ -n "${OUTPUT_DIR}" ]]; then
-  OVERRIDES+=("exp.output_dir=${OUTPUT_DIR}")
+  set -- "$@" "exp.output_dir=${OUTPUT_DIR}"
 fi
 
 IFS=',' read -r -a GPU_IDS <<< "${GPUS}"
@@ -91,13 +90,13 @@ RUNTIME_INFO="$(
   PYTHONPATH="${LAUNCH_PYTHONPATH}" "${PYTHON_BIN}" -c '
 import sys
 from dobot_nexus.core.config import load_config, resolve_training_runtime
+from dobot_nexus.runtime.config import validate_launcher_env
 
 config = load_config(sys.argv[1], sys.argv[3:], expected_task="train")
 try:
     runtime = config.get("runtime", {})
     if runtime.get("launcher") == "rlinf":
-        if runtime.get("fsdp", {}).get("enabled", False):
-            raise ValueError("RLinf Stage 2 does not support runtime.fsdp.enabled=true")
+        validate_launcher_env(config)
     else:
         runtime = resolve_training_runtime(config, world_size=int(sys.argv[2]))
 except ValueError as exc:
@@ -106,7 +105,7 @@ except ValueError as exc:
 launcher = str(runtime.get("launcher", "local"))
 fsdp_enabled = bool(runtime.get("fsdp", {}).get("enabled", False))
 print(f"{launcher}\t{str(fsdp_enabled).lower()}")
-' "${CONFIG}" "${NPROC_PER_NODE}" "${OVERRIDES[@]}"
+' "${CONFIG}" "${NPROC_PER_NODE}" "$@"
 )"
 IFS=$'\t' read -r RUNTIME_LAUNCHER FSDP_ENABLED <<< "${RUNTIME_INFO}"
 if [[ "${RUNTIME_LAUNCHER}" == "rlinf" ]]; then
@@ -128,7 +127,7 @@ else
     -m dobot_nexus.cli.main train
   )
 fi
-COMMAND+=(--config "${CONFIG}" "${OVERRIDES[@]}")
+COMMAND+=(--config "${CONFIG}" "$@")
 
 printf 'Training: config=%s launcher=%s fsdp=%s gpus=%s processes=%s\n' \
   "${CONFIG}" "${RUNTIME_LAUNCHER}" "${FSDP_ENABLED}" "${GPUS}" "${NPROC_PER_NODE}" >&2

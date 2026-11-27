@@ -13,7 +13,7 @@ import torch
 from dobot_nexus.core.contracts import TrainResult
 from dobot_nexus.core.import_utils import import_from_string
 
-from .artifacts import feature_metadata, file_digest, load_provider, retain_feature_bundle
+from .artifacts import feature_metadata, file_digest, load_provider, retain_feature_bundle, select_feature_manifest
 from .checkpoint import (
     _fsync,
     _sync_dir,
@@ -23,6 +23,7 @@ from .checkpoint import (
     validate_retention_config,
 )
 from .configuration import HeadConfig, LearningConfig, validate_recipe
+from .serialization import load_payload, save_payload
 from .identity import content_digest
 from .learner import create_learner
 from .offline_data import build_cache, load_cache
@@ -59,7 +60,7 @@ def save_prewarm(path, learner, *, feature_manifest, task_identity, cache_id, me
     path = Path(path)
     temporary = path.with_name("." + path.name + "-" + uuid.uuid4().hex)
     try:
-        torch.save({"digest": content_digest(payload), "payload": payload}, temporary)
+        save_payload({"digest": content_digest(payload), "payload": payload}, temporary)
         _fsync(temporary)
         temporary.replace(path)
         _sync_dir(path.parent)
@@ -67,8 +68,9 @@ def save_prewarm(path, learner, *, feature_manifest, task_identity, cache_id, me
         temporary.unlink(missing_ok=True)
 
 
-def read_prewarm(path, learner, *, task_identity):
-    wrapper = torch.load(path, map_location="cpu", weights_only=False)
+def read_prewarm(path, learner, *, task_identity, trusted_checkpoint=False):
+    wrapper = load_payload(path, trusted_checkpoint=trusted_checkpoint,
+                           trust_setting="train.trust_legacy_prewarm")
     payload = wrapper["payload"]
     if content_digest(payload) != wrapper["digest"]:
         raise ValueError("Prewarm payload digest mismatch.")
@@ -78,10 +80,10 @@ def read_prewarm(path, learner, *, task_identity):
     return payload
 
 
-def initialize_from_prewarm(learner, path, *, task_identity, inherit_optimizer=True):
+def initialize_from_prewarm(learner, path, *, task_identity, inherit_optimizer=True, trusted_checkpoint=False):
     if type(inherit_optimizer) is not bool:
         raise ValueError("inherit_prewarm_optimizer must be boolean.")
-    payload = read_prewarm(path, learner, task_identity=task_identity)
+    payload = read_prewarm(path, learner, task_identity=task_identity, trusted_checkpoint=trusted_checkpoint)
     state = payload["state"]
     if int(state.get("actor_updates", 0)) < 1 or int(state.get("actor_revision", 0)) < 1:
         raise ValueError("Prewarm requires an actor update and a positive actor revision.")
@@ -126,7 +128,7 @@ class RLTokenCacheTrainer:
 
     def run(self):
         cfg = self.config
-        root, spec, _ = feature_metadata(cfg.model.features.artifact)
+        root, spec, _, digest = select_feature_manifest(cfg.model.features.artifact)
         if cfg.data.get("require_token_acceptance", True):
             report = root / "token_validation.json"
             if not report.is_file():
@@ -135,9 +137,11 @@ class RLTokenCacheTrainer:
                     "ablation to bypass."
                 )
             validation = json.loads(report.read_text())
-            if not validation.get("accepted") or validation.get("feature_id") != spec.feature_id:
+            if validation.get("accepted") is not True or validation.get("feature_id") != spec.feature_id:
                 raise ValueError("Token dependence gate or feature identity failed.")
-        provider, _, _ = load_provider(cfg.model.features.artifact)
+        provider, _, loaded_spec = load_provider(root, expected_manifest_sha256=digest)
+        if loaded_spec != spec:
+            raise ValueError("Loaded feature spec differs from validated cache provider.")
         provider.to(cfg.runtime.get("device", "cpu"))
         episodes = import_from_string(cfg.data.episode_reader)(cfg.data)
         path = build_cache(
@@ -191,9 +195,11 @@ class RLTokenPrewarmTrainer:
         )
         feature_manifest_sha256 = file_digest(retained / "manifest.yaml")
         _, spec, _ = feature_metadata(retained)
+        trusted = bool(resume) and cfg.train.get("trust_resume_checkpoint", False)
         cache = load_cache(
             cfg.data.cache_path,
             spec,
+            trusted_checkpoint=cfg.data.get("trust_legacy_cache", False),
             chunk_size=self.heads.chunk_size,
             reward_definition=self.task_identity,
             gamma_step=self.learning.gamma,
@@ -213,6 +219,8 @@ class RLTokenPrewarmTrainer:
             spec,
             self.heads.chunk_size,
             **cfg.data.replay,
+            trusted_checkpoint=trusted,
+            resume_journal=Path(resume) / "journal.sqlite" if trusted else None,
             training_scope=self.switch.training_scope,
             updates_per_new_transition=self.learning.updates_per_new_transition,
             allow_terminal_chunks=True,
@@ -224,7 +232,7 @@ class RLTokenPrewarmTrainer:
                 spec, self.heads, self.learning, replay, device=cfg.runtime.get("device", "cpu")
             )
             if resume:
-                run_id = load_resume(resume, learner, task_fingerprint=task)
+                run_id = load_resume(resume, learner, task_fingerprint=task, trusted_checkpoint=trusted)
             else:
                 run_id = uuid.uuid4().hex
                 for row in cache["train"]:

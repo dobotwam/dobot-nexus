@@ -173,6 +173,48 @@ class TrainingTest(unittest.TestCase):
     def trainer(self, config):
         return RLTokenTrainer(config, self.experiment, runtime_factory=LocalRuntime)
 
+    def test_non_residual_resume_binds_explicit_reference_steps(self):
+        cfg = self.online()
+        cfg.environment.target = "tests.algorithms.rltoken.test_roles:scalar_agent"
+        cfg.train.max_steps = 1
+        self.assertNotIn("reference_num_steps", cfg.algorithm)
+        self.assertEqual(self.trainer(cfg).task_fingerprint,
+                         "dfd1e486ee2169622605bfa790415da4e2a95551bc0d819f6751b48f89bfd93f")
+
+        cfg.algorithm.reference_num_steps = 4
+        trainer = self.trainer(cfg)
+        trainer.run()
+        cfg.train.resume_from = "auto"
+        self.assertEqual(self.trainer(cfg).task_fingerprint, trainer.task_fingerprint)
+        cfg.algorithm.reference_num_steps = 9
+        with self.assertRaisesRegex(ValueError, "Resume task/reward fingerprint mismatch"):
+            self.trainer(cfg)
+
+    def test_workers_use_pinned_source_after_latest_moves(self):
+        config = self.online()
+        config.train.max_steps = 1
+        source = config.model.features.artifact
+        provider, provider_cfg, spec = load_provider(source)
+        with torch.no_grad():
+            provider.scale.add_(1)
+        other = write_model_bundle(self.root / "other", provider, provider_cfg)
+        self.assertNotEqual(spec, feature_metadata(other)[1])
+        pointer = self.root / "latest.txt"
+        pointer.write_text(source)
+        config.model.features.artifact = str(pointer)
+        trainer = self.trainer(config)
+        pointer.write_text(str(other))
+        self.assertEqual(trainer.run().global_step, 1)
+        self.assertEqual(feature_metadata(self.root / "rltoken/features")[1], spec)
+
+    def test_worker_rejects_changed_source_manifest_at_pinned_root(self):
+        config = self.online()
+        trainer = self.trainer(config)
+        manifest = Path(config.model.features.artifact) / "manifest.yaml"
+        manifest.write_text(manifest.read_text() + "\n# changed after selection\n")
+        with self.assertRaisesRegex(ValueError, "source manifest checksum"):
+            trainer.run()
+
     def historical_run(self):
         """Write the historical deep v1 state, journal and writable provider bundle directly."""
         cfg = self.online()
@@ -225,6 +267,7 @@ class TrainingTest(unittest.TestCase):
         policy.actor.load_state_dict(state["actor"])
         options = SamplingOptions(seed=42, deterministic=True)
         actions = policy.predict_action_chunk(observation(), options).actions
+        cfg.train.trust_resume_checkpoint = True
         cfg.train.resume_from = "auto"
         return cfg, retained, actions
 
@@ -401,6 +444,20 @@ class TrainingTest(unittest.TestCase):
             feature_manifest="manifest.yaml",
         )
 
+        from dobot_nexus.algorithms.rltoken.serialization import load_payload
+        from dobot_nexus.core.config import clone_config
+
+        torch.save(load_payload(config.algorithm.initialize_from), config.algorithm.initialize_from)
+        config.train.trust_resume_checkpoint = True
+        isolated = clone_config(config)
+        isolated.exp.run_dir = str(self.root / "untrusted-init")
+        role = LearnerRole(isolated, "run", "epoch", "task", None)
+        try:
+            with self.assertRaisesRegex(ValueError, "trusted_checkpoint"):
+                role.initialize(SimpleNamespace(channels=None, device="cpu"))
+        finally:
+            role.close()
+        config.train.trust_legacy_prewarm = True
         ready, updates = [], []
         collect, update = EnvRole.collect_chunk, LearnerRole.update
 
@@ -439,7 +496,7 @@ class TrainingTest(unittest.TestCase):
         trainer = self.trainer(config)
         first = trainer.run()
         checkpoint = Path(first.checkpoint)
-        state = torch.load(checkpoint / "state.pt", map_location="cpu", weights_only=False)
+        state = torch.load(checkpoint / "state.pt", map_location="cpu", weights_only=True)
         self.assertEqual(
             json.loads((checkpoint / "manifest.json").read_text())["format"],
             "rltoken_td3_resume_v3",

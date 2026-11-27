@@ -3,27 +3,29 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import sqlite3
 from collections import OrderedDict
+from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 import torch
 
+from .serialization import load_payload, save_payload
 from .identity import content_digest
 
 
 def _dump(value):
     stream = io.BytesIO()
-    torch.save(value, stream)
+    save_payload(value, stream)
     return stream.getvalue()
 
 
-def _load(payload):
-    # Journal is a local trusted training asset, never an untrusted network pickle.
-    return torch.load(io.BytesIO(payload), map_location="cpu", weights_only=False)
+def _load(payload, *, trusted_checkpoint=False):
+    return load_payload(io.BytesIO(payload), trusted_checkpoint=trusted_checkpoint)
 
 
 @dataclass(frozen=True)
@@ -83,9 +85,22 @@ class Replay:
         demo_capacity=100000,
         demo_max_bytes=2**30,
         training_scope="all",
+        trusted_checkpoint=False,
+        resume_journal=None,
     ):
         if training_scope not in {"all", "critical_phase"}:
             raise ValueError("Replay training_scope must be all or critical_phase.")
+        self.trusted_checkpoint = trusted_checkpoint
+        self._trusted_payloads = None
+        if trusted_checkpoint is True and resume_journal is not None:
+            # The live journal can extend (or differ from) the selected checkpoint.
+            # Only bytes actually present in its snapshot inherit resume trust.
+            uri = Path(resume_journal).resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True)) as snapshot:
+                self._trusted_payloads = {
+                    hashlib.sha256(payload).digest()
+                    for payload, in snapshot.execute("SELECT payload FROM events")
+                }
         self.training_scope = training_scope
         if min(capacity, max_bytes, max_record_bytes) <= 0:
             raise ValueError("Replay bounds must be positive.")
@@ -135,7 +150,11 @@ class Replay:
         self.status_counts = {"pending": 0, "admitted": 0, "rejected": 0}
         self.generator = torch.Generator().manual_seed(seed)
         self._rebuild_rings()
-        self._replay_after(0)
+        try:
+            self._replay_after(0)
+        except BaseException:
+            self.connection.close()
+            raise
 
     def _rebuild_rings(self):
         if self.sampling == "uniform":
@@ -203,6 +222,12 @@ class Replay:
                     self.capacity, self.max_bytes,
                 )
 
+    def _load_event(self, payload):
+        trusted = self.trusted_checkpoint is True and (
+            self._trusted_payloads is None or hashlib.sha256(payload).digest() in self._trusted_payloads
+        )
+        return _load(payload, trusted_checkpoint=trusted)
+
     def _replay_after(self, watermark):
         if watermark == 0:
             self.episode_outcomes.clear()
@@ -211,13 +236,13 @@ class Replay:
             "WHERE sequence>? ORDER BY sequence",
             (watermark,),
         ):
-            row = _load(payload)
+            row = self._load_event(payload)
             if content_digest(row) != digest:
                 raise ValueError(f"Corrupt Replay journal event at sequence {sequence}.")
             self._apply(sequence, status, reason, row, len(payload))
 
     def pending(self):
-        return [_load(row[0]) for row in self.connection.execute(
+        return [self._load_event(row[0]) for row in self.connection.execute(
             "SELECT e.payload FROM latest l JOIN events e ON e.sequence=l.sequence WHERE e.status='pending'")]
 
     def commit(self, transition, *, finalize=False):
@@ -230,7 +255,7 @@ class Replay:
                 (json.dumps(transition.key),)).fetchone()
             if prior is None:
                 raise ValueError("Cannot finalize an unknown pending transition.")
-            previous = _load(prior[0])
+            previous = self._load_event(prior[0])
             transition = replace(previous, rewards=transition.rewards, accepted=transition.accepted,
                                  reward_finalized=True, episode_success=(transition.episode_success
                                      if transition.episode_success is not None else previous.episode_success))
@@ -249,7 +274,7 @@ class Replay:
                 return DurableAck(row.key, status, reason, sequence, digest)
             if not finalize or status != "pending":
                 raise ValueError("Conflicting transition payload for an existing identity.")
-            previous = _load(payload)
+            previous = self._load_event(payload)
             unchanged = replace(
                 row,
                 rewards=previous.rewards,
@@ -364,7 +389,7 @@ class Replay:
                 "ORDER BY sequence",
                 (self.watermark,),
             ):
-                self._index_episode_outcome(_load(payload), status, reason)
+                self._index_episode_outcome(self._load_event(payload), status, reason)
         self.generator.set_state(state["rng"])
         self._rebuild_rings()
         self._replay_after(self.watermark)

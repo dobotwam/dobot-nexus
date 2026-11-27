@@ -8,6 +8,14 @@ import numpy as np
 import torch
 
 
+def scalar_value(value):
+    """Represent JSON-compatible NumPy scalars identically in storage and hashes."""
+    result = value.item()
+    if type(result) not in (bool, int, float, str):
+        raise TypeError(f"Unsupported RLToken scalar dtype {value.dtype}.")
+    return result
+
+
 def content_digest(value):
     digest = hashlib.sha256()
 
@@ -26,6 +34,8 @@ def content_digest(value):
             tensor = item.detach().cpu().contiguous()
             visit({"dtype": str(tensor.dtype), "shape": list(tensor.shape)})
             digest.update(tensor.reshape(-1).view(torch.uint8).numpy().tobytes())
+        elif isinstance(item, np.generic):
+            visit(scalar_value(item))
         elif isinstance(item, np.ndarray):
             visit({"numpy_dtype": str(item.dtype), "shape": list(item.shape)})
             digest.update(np.ascontiguousarray(item).tobytes())

@@ -8,6 +8,7 @@ import json
 import torch
 
 from dobot_nexus.core.contracts import ObservationBatch, SamplingOptions, RLFeatureSpec
+from .serialization import load_payload, save_payload
 from .identity import content_digest
 from .transitions import ObservationID, Transition
 from .routing import PolicySwitch
@@ -175,19 +176,19 @@ def build_cache(provider, episodes, destination, *, chunk_size, dataset_version,
     path = Path(destination)
     path.mkdir(parents=True, exist_ok=False)
     payload = dict(identity=identity, metadata=metadata, **rows)
-    torch.save(payload, path / "cache.pt")
+    save_payload(payload, path / "cache.pt")
     (path / "manifest.json").write_text(json.dumps({**metadata, "identity": identity,
                                                   "payload_digest": content_digest(payload)}, indent=2))
     return path
 
 
 def load_cache(path, spec, *, chunk_size, reward_definition, gamma_step=None, reference_num_steps=10,
-               policy_switch=None):
+               policy_switch=None, trusted_checkpoint=False):
     switch = PolicySwitch(**(policy_switch or {}))
     path = Path(path)
     manifest = json.loads((path / "manifest.json").read_text())
-    # Local trusted artifact; never accept arbitrary network pickle payloads.
-    payload = torch.load(path / "cache.pt", map_location="cpu", weights_only=False)
+    payload = load_payload(path / "cache.pt", trusted_checkpoint=trusted_checkpoint,
+                           trust_setting="data.trust_legacy_cache")
     metadata = payload["metadata"]
     if metadata.get("format") != CACHE_FORMAT:
         raise ValueError(

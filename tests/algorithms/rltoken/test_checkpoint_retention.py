@@ -91,7 +91,10 @@ class CheckpointTest(unittest.TestCase):
                     expected = learner.update()
                 digest = content_digest(learner.state_dict())
                 restored = self.learner(td3)
-                self.assertEqual(load_resume(path, restored, task_fingerprint="task"), "legacy")
+                with self.assertRaisesRegex(ValueError, "trusted"):
+                    load_resume(path, restored, task_fingerprint="task")
+                self.assertEqual(load_resume(path, restored, task_fingerprint="task",
+                                             trusted_checkpoint=True), "legacy")
                 self.assertEqual(restored.update(), expected)
                 self.assertEqual(content_digest(restored.state_dict()), digest)
 

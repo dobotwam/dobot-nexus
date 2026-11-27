@@ -20,6 +20,16 @@ from dobot_nexus.runtime.sync import SingleInFlightSyncCoordinator
 
 
 class ContractsTest(unittest.TestCase):
+    def test_rlinf_fsdp_cli_preflight_precedes_experiment_creation(self):
+        from pathlib import Path
+        from dobot_nexus.cli import train
+
+        recipe = Path(__file__).resolve().parents[2] / "examples/configs/rltoken/stage2.yaml"
+        with patch.object(train.Experiment, "from_config") as create:
+            with self.assertRaisesRegex(ValueError, "FSDP"):
+                train.main(["--config", str(recipe), "runtime.fsdp.enabled=true"])
+            create.assert_not_called()
+
     def test_topology_rejects_unsupported_placement_and_lane_shapes(self):
         cpu = PlacementSpec("cpu")
         role = RoleSpec("role", "module:Role", cpu)

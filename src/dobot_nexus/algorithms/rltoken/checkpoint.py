@@ -15,11 +15,11 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-import torch
 
 from dobot_nexus.training.resume import capture_rng_state, restore_rng_state
 
 from .artifacts import _file_identity, _read_feature_manifest, file_digest
+from .serialization import load_payload, save_payload
 from .identity import content_digest
 
 
@@ -426,7 +426,7 @@ def save_resume(root, learner, *, task_fingerprint, run_id, feature_manifest=Non
     staging = root / ("." + name)
     staging.mkdir()
     try:
-        torch.save(state, staging / "state.pt")
+        save_payload(state, staging / "state.pt")
         backup = sqlite3.connect(staging / "journal.sqlite")
         try:
             learner.replay.connection.backup(backup)
@@ -482,12 +482,12 @@ def save_resume(root, learner, *, task_fingerprint, run_id, feature_manifest=Non
     return final
 
 
-def load_resume(path, learner, *, task_fingerprint):
+def load_resume(path, learner, *, task_fingerprint, trusted_checkpoint=False):
     path = Path(path)
     manifest = json.loads((path / "manifest.json").read_text())
     if manifest.get("format") != getattr(learner, "resume_format", "rltoken_resume_v1"):
         raise ValueError("Not an RLToken multi-optimizer checkpoint.")
-    state = torch.load(path / "state.pt", map_location="cpu", weights_only=False)
+    state = load_payload(path / "state.pt", trusted_checkpoint=trusted_checkpoint)
     if content_digest(state) != manifest["state_digest"]:
         raise ValueError("Incomplete or corrupt RLToken checkpoint.")
     if (

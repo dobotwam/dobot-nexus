@@ -116,10 +116,14 @@ def _feature_spec(manifest):
     return RLFeatureSpec.from_dict(metadata["rl_features"])
 
 
-def feature_metadata(path):
+def select_feature_manifest(path):
     root = resolve_artifact(path)
-    manifest, _ = _read_feature_manifest(root)
-    return root, _feature_spec(manifest), manifest["model"]
+    _, manifest, digest = _source_manifest(path, root)
+    return root, _feature_spec(manifest), manifest["model"], digest
+
+
+def feature_metadata(path):
+    return select_feature_manifest(path)[:3]
 
 
 def _source_manifest(path, root):
@@ -220,11 +224,13 @@ def _check_loaded_provider_files(root, before, rehash):
             raise ValueError(error)
 
 
-def load_provider(path, *, device="cpu", _verified_files=None):
+def load_provider(path, *, device="cpu", _verified_files=None, expected_manifest_sha256=None):
     from dobot_nexus.inference.policy import InferencePolicy, _set_config_path
 
     root = resolve_artifact(path)
     retained, manifest, digest = _source_manifest(path, root)
+    if expected_manifest_sha256 is not None and digest != expected_manifest_sha256:
+        raise ValueError("Selected feature source manifest checksum mismatch.")
     spec = _feature_spec(manifest)
     allowed = _validate_feature_inputs(root, manifest, spec, stage_one=True)
     cached = {}
@@ -837,7 +843,7 @@ def _check_retained_copy(source, source_manifest, verified, staging):
     _check_retained_modes(modes.items(), ceilings)
 
 
-def retain_feature_bundle(source, destination, *, expected_manifest_sha256=None):
+def retain_feature_bundle(source, destination, *, expected_manifest_sha256=None, source_sha256=None):
     """Verify provider inputs and publish a sealed run-owned bundle."""
     from .checkpoint import _publication_lock, _sync_dir
 
@@ -846,6 +852,8 @@ def retain_feature_bundle(source, destination, *, expected_manifest_sha256=None)
     with _publication_lock(destination.parent):
         source_root = resolve_artifact(source)
         retained, source_manifest, source_digest = _source_manifest(source, source_root)
+        if source_sha256 is not None and source_digest != source_sha256:
+            raise ValueError("Selected feature source manifest checksum mismatch.")
         expected = _feature_spec(source_manifest)
         allowed, ceilings, extra_ceilings = _source_export_restrictions(
             source_root, source_manifest, expected
@@ -916,7 +924,8 @@ def retain_feature_bundle(source, destination, *, expected_manifest_sha256=None)
             return destination
 
         provider, config, _ = load_provider(
-            source_root, _verified_files=(source_root, source_verified)
+            source_root, _verified_files=(source_root, source_verified),
+            expected_manifest_sha256=source_digest,
         )
         with tempfile.TemporaryDirectory(dir=destination.parent, prefix=".features-") as private:
             staging = Path(private) / "bundle"

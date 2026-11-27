@@ -23,7 +23,7 @@ class LearnerTest(unittest.TestCase):
             self.root / "resume", learner, task_fingerprint="task", run_id="run"
         )
         before = content_digest(learner.state_dict())
-        state = torch.load(checkpoint / "state.pt", weights_only=False)
+        state = torch.load(checkpoint / "state.pt", weights_only=True)
         state["critic_updates"] += 10
         torch.save(state, checkpoint / "state.pt")
         with self.assertRaisesRegex(ValueError, "corrupt"):

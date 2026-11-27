@@ -12,10 +12,11 @@ from pathlib import Path
 
 from dobot_nexus.core.config import to_plain_dict
 from dobot_nexus.core.contracts import TrainResult
+from dobot_nexus.runtime.config import validate_launcher_env
 from dobot_nexus.runtime.factory import create_runtime
 from dobot_nexus.runtime.sync import SingleInFlightSyncCoordinator
 
-from .artifacts import feature_metadata
+from .artifacts import select_feature_manifest
 from .batching import environment_batch_size
 from .checkpoint import (
     _DEPLOYMENT,
@@ -54,8 +55,7 @@ def validate_training(config):
     validate_retention_config(train)
     if runtime.get("launcher") != "rlinf":
         raise ValueError("RLTokenTrainer requires runtime.launcher=rlinf (one driver).")
-    if runtime.get("fsdp", {}).get("enabled", False):
-        raise ValueError("RLToken Stage 2 does not support FSDP.")
+    validate_launcher_env(config)
     if train.get("ema_decay") is not None or train.get("grad_accum_steps", 1) != 1:
         raise ValueError("RLToken Stage 2 requires EMA disabled and grad_accum_steps=1.")
     if config.get("optim") or config.get("scheduler"):
@@ -148,18 +148,24 @@ class RLTokenTrainer:
             manifest = json.loads((self.resume_path / "manifest.json").read_text())
             config.model.features.artifact = str(resume_feature_root(self.resume_path, manifest))
             self.expected_manifest_sha256 = manifest.get("feature_manifest_sha256")
-        _, spec, _ = feature_metadata(config.model.features.artifact)
+        self.feature_root, spec, _, self.source_sha256 = select_feature_manifest(
+            config.model.features.artifact
+        )
+        self.feature_spec = spec
         if (
             spec.reference_horizon < self.heads.chunk_size
             or spec.action_dim != config.model.action_dim
         ):
             raise ValueError("Feature spec does not cover the configured fixed action chunk.")
+        algorithm_identity = PolicySwitch.from_config(config).identity()
+        if self.learning.td3 is not None:
+            algorithm_identity.update(task_identity=config.algorithm.get("task_identity"),
+                                      reference_num_steps=config.algorithm.get("reference_num_steps", 10))
+        elif config.algorithm.get("reference_num_steps") is not None:
+            algorithm_identity["reference_num_steps"] = config.algorithm["reference_num_steps"]
         self.task_fingerprint = content_digest(
             {
-                **PolicySwitch.from_config(config).identity(),
-                **({"task_identity": config.algorithm.get("task_identity"),
-                    "reference_num_steps": config.algorithm.get("reference_num_steps", 10)}
-                   if self.learning.td3 is not None else {}),
+                **algorithm_identity,
                 "feature_spec": spec,
                 "heads": self.heads,
                 "learning": self.learning,
@@ -198,6 +204,8 @@ class RLTokenTrainer:
             task_fingerprint=self.task_fingerprint,
             resume_path=self.resume_path,
             expected_manifest_sha256=self.expected_manifest_sha256,
+            feature_root=self.feature_root, expected_spec=self.feature_spec,
+            source_sha256=self.source_sha256,
         )
         runtime = (self.runtime_factory or create_runtime)(self.config, self.experiment.logger)
         session = runtime.start(topology)

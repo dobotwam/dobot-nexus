@@ -18,6 +18,7 @@ from dobot_nexus.algorithms.rltoken.offline_data import Episode, build_cache, lo
 from dobot_nexus.algorithms.rltoken.pretraining import (
     RLTokenPrewarmTrainer,
     initialize_from_prewarm,
+    read_prewarm,
 )
 from dobot_nexus.algorithms.rltoken.replay import Replay
 from dobot_nexus.algorithms.rltoken.transitions import Finalization
@@ -28,6 +29,19 @@ from .fakes import feature_spec, observation, transition
 
 
 class OfflineTest(unittest.TestCase):
+    def test_offline_labels_reject_ambiguous_episode_ids_before_reading_rows(self):
+        from dobot_nexus.algorithms.rltoken.lerobot_offline import read_episodes
+
+        path = self.root / "labels.json"
+        cfg = _wrap(dict(episode_labels=str(path), last_frame_is_final_observation=True))
+        for labels in ('{"1": {}, "01": {}}', '{"1": {}, "1": {}}', '{"-1": {}}', '{"true": {}}'):
+            path.write_text(labels)
+            with self.subTest(labels=labels), patch(
+                "dobot_nexus.algorithms.rltoken.lerobot_offline.LeRobotSource"
+            ) as source, self.assertRaisesRegex(ValueError, "episode"):
+                list(read_episodes(cfg))
+            source.assert_not_called()
+
     def test_cache_reuses_recorded_reference_seeds(self):
         from unittest.mock import patch
         factory = test_policy.PolicyTest()
@@ -41,6 +55,63 @@ class OfflineTest(unittest.TestCase):
             build_cache(provider, episodes, self.root/'recorded-noise', chunk_size=2,
                         dataset_version='v1', reward_definition='success', gamma_step=.99)
         self.assertEqual([call.args[1].seed for call in extract.call_args_list], [42,43,42,43])
+
+    def test_cache_acceptance_pins_selected_provider_when_latest_moves(self):
+        from dobot_nexus.algorithms.rltoken.artifacts import feature_metadata
+        from dobot_nexus.algorithms.rltoken.pretraining import RLTokenCacheTrainer
+
+        factory = test_policy.PolicyTest()
+        factory.root = self.root
+        cfg = factory.make_config()
+        accepted, spec, _ = feature_metadata(cfg.model.features.artifact)
+        other = factory.make_config(action=3).model.features.artifact
+        (accepted / "token_validation.json").write_text(json.dumps(
+            {"accepted": True, "feature_id": spec.feature_id}
+        ))
+        pointer = self.root / "latest.txt"
+        pointer.write_text(str(accepted))
+        cfg.model.features.artifact = str(pointer)
+        cfg.algorithm = {}
+        cfg.data = _wrap(dict(episode_reader="fixture:reader", cache=dict(chunk_size=2,
+            dataset_version="fixture", reward_definition="success", gamma_step=.99,
+            validation_fraction=0)))
+        episode = Episode("train", [observation()] * 3, torch.zeros(2, 2), torch.zeros(2),
+                          torch.zeros(2, dtype=torch.bool), "vla", True)
+
+        def load_after_move(path, **kwargs):
+            pointer.write_text(other)
+            return load_provider(path, **kwargs)
+
+        with (patch("dobot_nexus.algorithms.rltoken.pretraining.load_provider", load_after_move),
+              patch("dobot_nexus.algorithms.rltoken.pretraining.import_from_string",
+                    return_value=lambda config: [episode])):
+            result = RLTokenCacheTrainer(cfg, SimpleNamespace(run_dir=self.root)).run()
+        row = load_cache(result.checkpoint, spec, chunk_size=2, reward_definition="success")["train"][0]
+        self.assertEqual(row.features.feature_id, spec.feature_id)
+
+    def test_cache_rejects_manifest_replacement_before_provider_construction(self):
+        import yaml
+        from dobot_nexus.algorithms.rltoken.pretraining import RLTokenCacheTrainer
+        from dobot_nexus.algorithms.rltoken.artifacts import feature_metadata
+
+        factory = test_policy.PolicyTest()
+        factory.root = self.root
+        cfg = factory.make_config()
+        root, spec, _ = feature_metadata(cfg.model.features.artifact)
+        (root / "token_validation.json").write_text(json.dumps({"accepted": True, "feature_id": spec.feature_id}))
+
+        def replace_constructor(path, **kwargs):
+            manifest = path / "manifest.yaml"
+            contents = yaml.safe_load(manifest.read_text())
+            contents["model"]["target"] = "fixture:ReplacementProvider"
+            manifest.write_text(yaml.safe_dump(contents))
+            return load_provider(path, **kwargs)
+
+        with (patch("dobot_nexus.algorithms.rltoken.pretraining.load_provider", replace_constructor),
+              patch("dobot_nexus.inference.policy.InferencePolicy") as constructor,
+              self.assertRaisesRegex(ValueError, "manifest checksum")):
+            RLTokenCacheTrainer(cfg, SimpleNamespace(run_dir=self.root)).run()
+        constructor.assert_not_called()
 
     def test_cache_reads_only_required_chunk_observations_once(self):
         factory = test_policy.PolicyTest()
@@ -121,7 +192,8 @@ class OfflineTest(unittest.TestCase):
 
         cache["metadata"]["format"] = "rltoken_episode_cache_v1"
         cache["identity"] = content_digest(cache["metadata"])
-        torch.save(cache, cache_path / "cache.pt")
+        from dobot_nexus.algorithms.rltoken.serialization import save_payload
+        save_payload(cache, cache_path / "cache.pt")
         manifest = dict(
             cache["metadata"], identity=cache["identity"], payload_digest=content_digest(cache)
         )
@@ -187,7 +259,7 @@ class OfflineTest(unittest.TestCase):
         ):
             result = RLTokenPrewarmTrainer(cfg, experiment).run()
         prewarm = self.root / "rltoken/prewarm.pt"
-        saved = torch.load(prewarm, weights_only=False)["payload"]["state"]
+        saved = torch.load(prewarm, weights_only=True)["payload"]["state"]
         self.assertEqual(result.global_step, 1)
         self.assertEqual(saved["actor_updates"], 0)
         with self.assertRaisesRegex(ValueError, "actor update"):
@@ -202,6 +274,12 @@ class OfflineTest(unittest.TestCase):
         cfg.train.resume_from = result.checkpoint
         cfg.train.keep_last_checkpoints = 2
         cfg.train.max_steps = 3
+        # The selected resume is trusted. Its separate cache still needs its own opt-in.
+        torch.save(cache, path / "cache.pt")  # Historical dataclass encoding.
+        cfg.train.trust_resume_checkpoint = True
+        with self.assertRaisesRegex(ValueError, "trusted_checkpoint"):
+            RLTokenPrewarmTrainer(cfg, experiment).run()
+        cfg.data.trust_legacy_cache = True
         result = RLTokenPrewarmTrainer(cfg, experiment).run()
         self.assertEqual(result.global_step, 3)
         checkpoints = sorted(first_checkpoint.parent.glob("step-*"))
@@ -211,7 +289,7 @@ class OfflineTest(unittest.TestCase):
             manifest = json.loads((path / "manifest.json").read_text())
             self.assertEqual(manifest["task_fingerprint"], fingerprint)
             self.assertTrue((path / manifest["feature_manifest"]).is_file())
-        state = torch.load(prewarm, weights_only=False)["payload"]["state"]
+        state = read_prewarm(prewarm, learner, task_identity="success")["state"]
         initialize_from_prewarm(learner, prewarm, task_identity="success")
         self.assertEqual(learner.update_step, 3)
         self.assertEqual((learner.actor_updates, learner.critic_updates, replay.budget), (0, 0, 0))

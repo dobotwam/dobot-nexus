@@ -103,7 +103,9 @@ class RolloutRole:
         "feature_manifest_sha256",
     )
 
-    def __init__(self, config, run_id, epoch, expected_manifest_sha256=None):
+    def __init__(self, config, run_id, epoch, expected_manifest_sha256=None, expected_spec=None,
+                 source_sha256=None):
+        self.expected_spec, self.source_sha256 = expected_spec, source_sha256
         self.config, self.run_id, self.epoch = config, run_id, epoch
         self.expected_manifest_sha256 = expected_manifest_sha256
         self.engine = None
@@ -115,13 +117,15 @@ class RolloutRole:
         feature_root = retain_feature_bundle(
             self.config.model.features.artifact,
             Path(self.config.exp.run_dir) / "rltoken/features",
-            expected_manifest_sha256=self.expected_manifest_sha256,
+            expected_manifest_sha256=self.expected_manifest_sha256, source_sha256=self.source_sha256,
         )
         self.config.model.features.artifact = str(feature_root)
         # Assets and model-owned config now point into the retained run bundle.
         policy = RLTokenPolicy(
             self.config, mode="infer", retained_feature_root=feature_root
         ).to(device)
+        if self.expected_spec is not None and policy.feature_spec != self.expected_spec:
+            raise ValueError("Rollout feature spec differs from the selected provider.")
         self._feature_manifest_sha256 = policy._retained_files[Path("manifest.yaml")].sha256
         self.engine = RolloutEngine(
             policy,
@@ -203,7 +207,8 @@ class RolloutRole:
 class LearnerRole:
     rpc_methods = ("update", "pending", "sync_model_to_rollout", "rollout_rng", "snapshot")
 
-    def __init__(self, config, run_id, epoch, task_fingerprint, resume_path):
+    def __init__(self, config, run_id, epoch, task_fingerprint, resume_path, expected_spec=None):
+        self.expected_spec = expected_spec
         self.config, self.run_id, self.epoch = config, run_id, epoch
         self.task_fingerprint, self.resume_path = task_fingerprint, resume_path
         self.learner = None
@@ -217,6 +222,8 @@ class LearnerRole:
         with torch.random.fork_rng(devices=[]):
             torch.random.default_generator.manual_seed(learning.seed)
             policy = RLTokenPolicy(self.config, mode="train")
+        if self.expected_spec is not None and policy.feature_spec != self.expected_spec:
+            raise ValueError("Learner feature spec differs from the selected provider.")
         journal = Path(self.config.exp.run_dir) / "rltoken/journal.sqlite"
         journal.parent.mkdir(parents=True, exist_ok=True)
         if self.resume_path and not journal.exists():
@@ -225,11 +232,14 @@ class LearnerRole:
             raise ValueError(
                 "An existing RL journal requires train.resume_from or a new run directory."
             )
+        trusted = bool(self.resume_path) and self.config.train.get("trust_resume_checkpoint", False)
         replay = Replay(
             journal,
             policy.feature_spec,
             policy.head_config.chunk_size,
             **self.config.data.replay,
+            trusted_checkpoint=trusted,
+            resume_journal=Path(self.resume_path) / "journal.sqlite" if trusted else None,
             updates_per_new_transition=learning.updates_per_new_transition,
             seed=learning.seed,
             task_fingerprint=self.task_fingerprint,
@@ -251,7 +261,8 @@ class LearnerRole:
             raise
         if self.resume_path:
             restored_run = load_resume(
-                self.resume_path, self.learner, task_fingerprint=self.task_fingerprint
+                self.resume_path, self.learner, task_fingerprint=self.task_fingerprint,
+                trusted_checkpoint=trusted,
             )
             if restored_run != self.run_id:
                 raise ValueError("Resume run identity mismatch.")
@@ -262,6 +273,7 @@ class LearnerRole:
                 self.learner,
                 self.config.algorithm.initialize_from,
                 task_identity=self.config.algorithm.task_identity,
+                trusted_checkpoint=self.config.train.get("trust_legacy_prewarm", False),
                 inherit_optimizer=self.config.algorithm.get("inherit_prewarm_optimizer", True),
             )
         if self.config.data.get("offline_cache") and not self.resume_path:
@@ -270,6 +282,7 @@ class LearnerRole:
             cache = load_cache(
                 self.config.data.offline_cache,
                 policy.feature_spec,
+                trusted_checkpoint=self.config.data.get("trust_legacy_cache", False),
                 chunk_size=policy.head_config.chunk_size,
                 reward_definition=self.config.algorithm.task_identity,
                 gamma_step=self.learner.gamma_step,

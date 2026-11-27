@@ -6,6 +6,8 @@ from collections.abc import Mapping
 
 def validate_launcher_env(config):
     if config.get("runtime", {}).get("launcher") == "rlinf":
+        if config["runtime"].get("fsdp", {}).get("enabled", False):
+            raise ValueError("runtime.launcher=rlinf does not support FSDP.")
         algorithm = config.get("algorithm")
         if not isinstance(algorithm, Mapping) or not algorithm.get("target"):
             raise ValueError("runtime.launcher=rlinf requires algorithm.target.")
