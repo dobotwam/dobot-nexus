@@ -33,16 +33,25 @@ def resolve_core_settings(config, *, mode):
     default = model.get("operator_numerics", "legacy")
     max_token_len = int(model.get("max_token_len", 200))
     if mode == "infer" and model.get("artifact"):
-        from dobot_nexus.core.artifacts import load_manifest, resolve_artifact
+        from dobot_nexus.core.artifacts import (
+            get_verified_artifact_snapshot,
+            load_manifest,
+            resolve_artifact,
+        )
         from dobot_nexus.core.config import load_config
 
         root = resolve_artifact(model.artifact)
-        saved = load_config(root / "config_resolved.yaml", expected_task="train")
+        snapshot = get_verified_artifact_snapshot(root)
+        if snapshot is None:
+            saved = load_config(root / "config_resolved.yaml", expected_task="train")
+            manifest = load_manifest(root)
+        else:
+            manifest, saved = snapshot
         # Legacy Memory artifacts already used OpenPI math; their model-owned
         # resolver supplies that default. Legacy BC artifacts used legacy math.
         trained_default = "openpi" if saved.model.target.endswith(":Pi05MemoryModel") else "legacy"
         trained = saved.model.get("operator_numerics", trained_default)
-        metadata = load_manifest(root).get("model", {})
+        metadata = manifest.get("model", {})
         recorded = metadata.get("operator_numerics", trained)
         if recorded != trained:
             raise ValueError("Artifact operator_numerics disagrees with its saved configuration.")
@@ -314,8 +323,10 @@ class Pi05Config:
             raise ValueError("Pi0.5 model.inference_backend must be 'torch'.")
         if self.image_size != (224, 224):
             raise ValueError("The aligned Pi0.5 operator requires model.image_size=[224, 224].")
-        if set(self.camera_mapping.values()) != set(_DEFAULT_CAMERAS.values()):
+        slots = tuple(self.camera_mapping.values())
+        if (not slots or len(set(slots)) != len(slots)
+                or not set(slots).issubset(_DEFAULT_CAMERAS.values())):
             raise ValueError(
-                "Pi0.5 cameras must populate base_0_rgb, left_wrist_0_rgb, and "
-                "right_wrist_0_rgb exactly once."
+                "Pi0.5 cameras must map a nonempty subset of base_0_rgb, "
+                "left_wrist_0_rgb, and right_wrist_0_rgb without duplicate slots."
             )

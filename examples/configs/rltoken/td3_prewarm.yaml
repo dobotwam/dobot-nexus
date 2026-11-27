@@ -1,0 +1,14 @@
+extends: td3_online.yaml
+exp:
+  name: rltoken_td3_prewarm
+algorithm:
+  target: dobot_nexus.algorithms.rltoken.pretraining:RLTokenPrewarmTrainer
+  initialize_from: null
+runtime:
+  launcher: local
+  device: cpu
+data:
+  cache_path: ${env:RLT_CACHE,/path/to/cache}
+train:
+  max_steps: 30000
+  save_every: 1000

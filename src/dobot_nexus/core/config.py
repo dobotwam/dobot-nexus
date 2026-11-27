@@ -137,6 +137,7 @@ def validate_config(config: Mapping[str, Any], expected_task: str | None = None)
         raise ValueError(f"task must be 'train' or 'infer', got {task!r}.")
     if expected_task is not None and task != expected_task:
         raise ValueError(f"Expected task={expected_task!r}, got {task!r}.")
+    algorithm_target(config)
     model = config.get("model")
     if not isinstance(model, Mapping):
         raise ValueError("model must be a mapping.")
@@ -169,6 +170,21 @@ def validate_config(config: Mapping[str, Any], expected_task: str | None = None)
         raise ValueError("Inference requires model.artifact or model.checkpoint.")
 
 
+def algorithm_target(config: Mapping[str, Any]) -> str | None:
+    """Resolve trainer selection without importing training dependencies."""
+    algorithm = config.get("algorithm", "bc")
+    if isinstance(algorithm, str) and algorithm == "bc":
+        return None
+    if not isinstance(algorithm, Mapping):
+        raise ValueError("algorithm must be 'bc' or a mapping containing target.")
+    target = algorithm.get("target")
+    if not isinstance(target, str) or not re.fullmatch(
+        r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*", target
+    ):
+        raise ValueError("algorithm.target must use module:object.")
+    return target
+
+
 def _merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     """Merge mappings recursively; scalars, lists and null replace the base value."""
     result = dict(base)
@@ -180,22 +196,28 @@ def _merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, An
     return result
 
 
-def _read_config(path: Path, parents: tuple[Path, ...] = ()) -> dict[str, Any]:
+def _read_config(
+    path: Path, parents: tuple[Path, ...] = (), *, allow_extends: bool = True,
+    raw_bytes: bytes | None = None,
+) -> dict[str, Any]:
     if path in parents:
         chain = " -> ".join(str(item) for item in (*parents, path))
         raise ValueError(f"Circular config extends: {chain}")
     if len(parents) >= 32:
         raise ValueError(f"Config extends exceeds 32 levels: {path}")
-    if not path.is_file():
-        raise FileNotFoundError(f"Config not found: {path}")
-    with path.open("r", encoding="utf-8") as handle:
-        payload = yaml.safe_load(handle)
+    if raw_bytes is None:
+        if not path.is_file():
+            raise FileNotFoundError(f"Config not found: {path}")
+        raw_bytes = path.read_bytes()
+    payload = yaml.safe_load(raw_bytes.decode("utf-8"))
     if payload is None:
         payload = {}
     if not isinstance(payload, dict):
         raise ValueError(f"Config root must be a mapping: {path}")
     if "extends" not in payload:
         return payload
+    if not allow_extends:
+        raise ValueError(f"Resolved config cannot use extends: {path}")
     base = payload.pop("extends")
     if not isinstance(base, str) or not base.strip():
         raise ValueError(f"Config extends must name one YAML file: {path}")
@@ -203,20 +225,7 @@ def _read_config(path: Path, parents: tuple[Path, ...] = ()) -> dict[str, Any]:
     return _merge_config(_read_config(base_path, (*parents, path)), payload)
 
 
-def load_config(
-    path: str | Path,
-    overrides: list[str] | None = None,
-    *,
-    expected_task: str | None = None,
-) -> Config:
-    """Load a YAML template or recipe, then apply environment and CLI overrides.
-
-    ``extends`` names one base file relative to the declaring YAML. It is removed
-    during loading, so saved resolved configs do not depend on template files.
-    """
-    config_path = Path(path).expanduser().resolve()
-    payload = _read_config(config_path)
-    payload = resolve_environment(payload)
+def _finish_config(payload, config_path, overrides, expected_task):
     payload = apply_overrides(payload, overrides)
     if "extends" in payload:
         raise ValueError("Declare extends in the YAML file, not as a command-line override.")
@@ -225,6 +234,42 @@ def load_config(
     config.setdefault("exp", Config())
     config.exp.setdefault("config_path", str(config_path))
     return config
+
+
+def load_config_bytes(
+    raw_bytes: bytes, path: str | Path, *, expected_task: str | None = None,
+    allow_extends: bool = True,
+) -> Config:
+    """Load captured YAML bytes, resolving any permitted base relative to path."""
+    config_path = Path(path).expanduser().resolve()
+    payload = _read_config(config_path, raw_bytes=raw_bytes, allow_extends=allow_extends)
+    return _finish_config(resolve_environment(payload), config_path, None, expected_task)
+
+
+def load_config(
+    path: str | Path,
+    overrides: list[str] | None = None,
+    *,
+    expected_task: str | None = None,
+    allow_extends: bool = True,
+) -> Config:
+    """Load a YAML template or recipe, then apply environment and CLI overrides.
+
+    ``extends`` names one base file relative to the declaring YAML. It is removed
+    during loading, so saved resolved configs do not depend on template files.
+    """
+    source = Path(path).expanduser()
+    if source.name == "config_resolved.yaml":
+        from dobot_nexus.core.artifacts import get_verified_artifact_snapshot
+
+        snapshot = get_verified_artifact_snapshot(source.parent, resolve_pointer=False)
+        if snapshot is not None:
+            # Model constructors may request the training config again. Its environment
+            # values were already resolved when the verified bytes were parsed.
+            return _finish_config(snapshot[1], source, overrides, expected_task)
+    config_path = source.resolve()
+    payload = _read_config(config_path, allow_extends=allow_extends)
+    return _finish_config(resolve_environment(payload), config_path, overrides, expected_task)
 
 
 def clone_config(config: Config) -> Config:

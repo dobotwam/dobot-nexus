@@ -1,8 +1,9 @@
 # Nexus 架构与模型接入
 
-本文描述当前源码中的职责与调用关系。正式策略训练使用 `BCTrainer`；BC、RECAP 条件策略
-和 Memory 策略均通过 `model.target` 接入。Pi0.5 的训练和部署只使用 Torch。
-在线 RL / RL_token 的 Trainer、rollout 和多优化器恢复尚未实现。
+本文描述当前源码中的职责与调用关系。BC、RECAP 条件策略、Memory 和 RLToken Stage 1
+使用 `BCTrainer`，RLToken Stage 2 通过 `algorithm.target` 选择专用 Trainer。模型均通过
+`model.target` 接入，Pi0.5 的训练和部署只使用 Torch。在线采集、双优化器恢复与组合部署
+见 [RLToken 实现说明](rltoken_implementation.md)。
 
 ## 目录与职责
 
@@ -20,6 +21,8 @@ src/dobot_nexus/
 │   ├── server.py           # Nexus HTTP 接口
 │   └── transport/          # 通用 WebSocket 服务/客户端、NumPy msgpack 编解码
 ├── algorithms/recap/       # Return、Advantage、离线 Value 训练与标注
+├── algorithms/rltoken/     # Token、Actor/Critic、Replay、训练协调与角色拓扑
+├── runtime/                # 执行协议、local/ 进程内后端与 ray/ 可选 RLinf 后端
 ├── modules/
 │   ├── value/              # 可复用 Value 网络、损失与输入处理
 │   ├── memory/             # 模型无关 FrameSample 记忆类型、位置编码、采样、Torch 层、会话与特征库
@@ -94,6 +97,9 @@ reader、数学变换、统计和缓存。
 `training/bc_trainer.py` 管理优化循环；`runtime.py` 隔离 local、Accelerate、FSDP 差异；
 `resume.py` 管理恢复一致性；`tracking.py` 提供仅主 rank 启用的 TensorBoard/W&B 指标记录及同步。
 当前 `algorithm: bc` 对应单模型、单优化器的监督式训练流程。
+`algorithm.target` 选择算法拥有的 Trainer；RLToken 的双优化器恢复和 Worker 生命周期
+位于 `algorithms/rltoken/`，不扩展 BC Runtime。下述目录为 BC Artifact；RLToken 的
+训练恢复目录另见其实现说明，部署仍遵循公开 v2 Artifact 契约。
 RECAP 的 Value 训练与离线标注由 `algorithms/recap/cli.py` 编排，ACP 策略仍复用 BCTrainer。
 
 schema v2 Artifact 分开保存部署和续训状态：
@@ -173,6 +179,7 @@ GPU 服务器：robot-client → WebSocket policy → Torch 模型
 | `memory/` | 历史采样、特征、会话和 Memory 模型 |
 | `modeling_recap.py`、`data_adapter_recap.py` | RECAP 条件策略的 Pi0.5 模型与观测接入 |
 | `configuration_recap.py`、`data/recap.py` | RECAP 策略 Artifact 恢复、标签关联与条件 token 路由 |
+| `rltoken/` | Stage 1 联合训练、冻结 prefix 特征、动作 codec 与资产适配 |
 | `deploy/` | Pi0.5 服务装配与机器人输入适配 |
 
 BC、RECAP 和 Memory 共享 Pi0.5 core；RECAP 和 Memory 使用各自的 `model.target`。
@@ -199,9 +206,10 @@ model:
 5. 最后在本地工具中验证真实权重、GPU、分布式和目标硬件表现。
 
 只改变单步 loss 的算法可换 `model.target` 或 `training_step()`，继续使用 BCTrainer。
-未来需要 rollout、多模型、多优化器的 RL 算法，应实现具体 Trainer，并补齐 Trainer 选择、
-算法配置 fingerprint、命名恢复组件、环境/数据进度和部署 actor 导出。当前 CLI 不支持
-`algorithm.target` 或 `RLTokenTrainer`，不能把规划配置当作可运行示例。
+需要 rollout、多模型、多优化器的算法在 `algorithms/<algorithm>/` 实现具体 Trainer，
+由 `algorithm.target` 选择；算法拥有 fingerprint、恢复状态、环境进度和部署导出。
+RLToken 的 Trainer、Replay、采集、同步和 runtime 执行接口提供现有参考。复用计算放在
+`modules/`，具体 VLA 特征与数据适配留在模型包，不新增另一套模型继承协议。
 
 RL 私有 logprob、reward、advantage 和 token mask 留在算法模块；最终部署仍输出公共动作块。
 不要提前新增模型继承协议，也不要将关闭梯度的 `InferencePolicy` 用作训练 rollout 接口。

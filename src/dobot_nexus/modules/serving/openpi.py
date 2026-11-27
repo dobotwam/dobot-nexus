@@ -15,6 +15,7 @@ OPENPI_TO_NEXUS_IMAGES = {
     "right_camera": "right_wrist",
 }
 OPENPI_PROTOCOL_NAME = "openpi-websocket-msgpack_numpy"
+_UNSET = object()
 
 
 def validated_camera_mapping(
@@ -85,7 +86,11 @@ def build_nexus_observation(
             "OpenPI observation.prompt must be a non-empty string, or configure --default-prompt."
         )
 
+    control = observation.get("control")
+    if control is not None and not isinstance(control, Mapping):
+        raise TypeError("OpenPI observation.control must be a mapping.")
     return {
+        **({"control": dict(control)} if control is not None else {}),
         "images": {
             nexus_name: _image_to_hwc_uint8(raw_images[openpi_name], openpi_name, image_size)
             for openpi_name, nexus_name in camera_mapping.items()
@@ -125,21 +130,25 @@ class NexusOpenPiPolicy:
         policy: Any,
         *,
         seed: int = 42,
-        num_steps: int = 10,
+        num_steps=_UNSET,
         vary_seed: bool = True,
         default_prompt: str | None = None,
         camera_mapping: Mapping[str, str] = OPENPI_TO_NEXUS_IMAGES,
     ) -> None:
         self.policy = policy
         self.seed = int(seed)
-        self.num_steps = int(num_steps)
+        if num_steps is _UNSET:
+            config = getattr(policy, "config", None)
+            inference = config.get("inference") if isinstance(config, Mapping) else None
+            num_steps = inference.get("num_steps", 10) if isinstance(inference, Mapping) else 10
+        self.num_steps = None if num_steps is None else int(num_steps)
         self.vary_seed = bool(vary_seed)
         self.default_prompt = default_prompt
         self.camera_mapping = validated_camera_mapping(
             camera_mapping, camera_names=policy.spec.camera_names
         )
         self.prediction = PredictionHandler(
-            policy, seed=seed, num_steps=num_steps, vary_seed=vary_seed
+            policy, seed=seed, num_steps=self.num_steps, vary_seed=vary_seed
         )
 
     def infer(self, observation: Mapping[str, Any]) -> dict[str, Any]:

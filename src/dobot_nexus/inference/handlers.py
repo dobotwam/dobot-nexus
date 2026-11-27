@@ -17,7 +17,8 @@ class PredictionHandler:
 
     def __init__(self, policy, *, seed=42, num_steps=10, vary_seed=True):
         self.policy = policy
-        self.seed, self.num_steps, self.vary_seed = int(seed), int(num_steps), bool(vary_seed)
+        self.seed, self.vary_seed = int(seed), bool(vary_seed)
+        self.num_steps = None if num_steps is None else int(num_steps)
         self._request_index = 0
         self._lock = threading.Lock()
 

@@ -3,12 +3,20 @@ from __future__ import annotations
 import sys
 import threading
 from collections import OrderedDict
+from contextlib import nullcontext
 from dataclasses import fields, is_dataclass, replace
+from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 import numpy as np
 
-from dobot_nexus.core.artifacts import artifact_weight_path, load_manifest, resolve_artifact
+from dobot_nexus.core.artifacts import (
+    artifact_weight_path,
+    load_manifest,
+    resolve_artifact,
+    verified_artifact_snapshot,
+)
 from dobot_nexus.core.config import clone_config, load_config
 from dobot_nexus.core.contracts import ObservationBatch, PolicyOutput, SamplingOptions
 from dobot_nexus.core.import_utils import build_model
@@ -89,18 +97,29 @@ def _set_config_path(config, path: str, value) -> None:
 class InferencePolicy:
     """Thread-safe stateless action-chunk policy."""
 
-    def __init__(self, config) -> None:
+    def __init__(
+        self, config, *, _preloaded_artifact: tuple[Path, dict, Any] | None = None
+    ) -> None:
         self.config = clone_config(config)
         self.artifact_dir = None
         self.manifest = None
         artifact = self.config.model.get("artifact")
-        if artifact:
+        snapshot_context = nullcontext()
+        if _preloaded_artifact is not None:
+            self.artifact_dir, self.manifest, training_config = _preloaded_artifact
+            snapshot_context = verified_artifact_snapshot(*_preloaded_artifact)
+        elif artifact:
             self.artifact_dir = resolve_artifact(str(artifact))
-            self.config.model.artifact = str(self.artifact_dir)
             self.manifest = load_manifest(self.artifact_dir)
             training_config = load_config(
-                self.artifact_dir / "config_resolved.yaml", expected_task="train"
+                self.artifact_dir / "config_resolved.yaml",
+                expected_task="train",
+                allow_extends=False,
             )
+            snapshot_context = verified_artifact_snapshot(
+                self.artifact_dir, self.manifest, training_config
+            )
+        if self.artifact_dir is not None:
             manifest_model = self.manifest.get("model", {})
             if manifest_model.get("target") != training_config.model.target:
                 raise ValueError("Artifact model.target disagrees with its saved configuration.")
@@ -142,8 +161,11 @@ class InferencePolicy:
                     str(config_path),
                     str((self.artifact_dir / relative_path).resolve()),
                 )
-            self.config.model.checkpoint = str(artifact_weight_path(self.artifact_dir))
-        self.model = build_model(self.config, mode="infer")
+            self.config.model.artifact = str(self.artifact_dir)
+        with snapshot_context:
+            if self.artifact_dir is not None:
+                self.config.model.checkpoint = str(artifact_weight_path(self.artifact_dir))
+            self.model = build_model(self.config, mode="infer")
         if self.artifact_dir is not None and self.manifest is not None:
             nexus_weights = self.manifest.get("files", {}).get("nexus_weights")
             if nexus_weights:
@@ -249,8 +271,11 @@ class InferencePolicy:
                 },
                 state=np.zeros((1, self.spec.state_dim), dtype=np.float32),
                 prompt=["warm up"],
+                control=getattr(self.model, "warmup_control", dict)(),
             )
-        return self.predict_chunk(observation, SamplingOptions(seed=0))
+        return self.predict_chunk(observation, SamplingOptions(
+            seed=0, num_steps=self.config.get("inference", {}).get("num_steps")
+        ))
 
     def close(self) -> None:
         self._loaded = False

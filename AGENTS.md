@@ -85,15 +85,21 @@ computational components in `modules/<component>/`. Experiments follow the same 
   `models/<model>/<algorithm>/`. Algorithms must construct feature providers via `model.target` or
   Artifacts without statically importing concrete models; model adapters must not import Trainers
   or distributed Workers.
-- Isolate distributed RL runtimes (such as RLinf or Ray) inside lazy optional execution adapters
-  loaded only when `Trainer.run()` executes. Keep Env/Rollout/Replay/Learner business logic in
-  plain Python/Torch objects so unit and protocol tests run on CPU without a live cluster, and
-  importing BC, deployment, or shared `modules/` never requires RL runtime dependencies.
+- RLToken owns token reconstruction, the actor/critics, replay and recovery in
+  `algorithms/rltoken/`. Its Pi0.5 Stage 1, prefix/KV features and action codec live in
+  `models/pi05/rltoken/`. Preserve detached feature identity, dimensions and masks from
+  `core/rl_contracts.py` across the algorithm/model boundary.
+- Load RLinf and Ray through `runtime.factory.create_runtime()` in `Trainer.run()`. Keep those
+  imports in `runtime/ray/`. Use `runtime/local/` for in-process tests of the same contracts.
+  Keep Env/Rollout/Replay/Learner business logic in plain Python/Torch objects. CPU protocol
+  tests and imports of BC, deployment, shared modules and runtime contracts can then run
+  independently of RL runtime dependencies and a live cluster.
 - Keep multi-optimizer/Replay training recovery in an explicit algorithm-owned checkpoint format,
   separate from deployment. Export deployable RL policies as standard public v2 Artifacts whose
   composed policy implements `BaseVLAModule` (excluding critics and Replay) so `InferencePolicy`
   and `modules/serving/` load them transparently.
-- Do not extract a shared RL execution layer (Replay/Rollout/Worker runtime) until at least two
+- Keep the shared runtime limited to execution contracts and backends. Extract common
+  algorithm behavior (such as Replay or Rollout) only when at least two
   online RL algorithms share the same execution semantics; never place Ray/RLinf or job
   orchestration inside `modules/` or `core/`.
 
@@ -117,7 +123,8 @@ benchmark scripts, and their diagnostic tests and reports under the Git-ignored 
 
 Place algorithm tests in `tests/algorithms/<algorithm>/`, shared component tests in
 `tests/modules/<component>/`, and model integration tests in `tests/models/<model>/`.
-Test dependency isolation and saved Artifact compatibility on CPU.
+Exercise optional capability failures, dependency isolation, saved Artifact compatibility and
+algorithm Role protocols on CPU. Keep live cluster validation in `local_script/`.
 
 ## Git commits
 

@@ -78,6 +78,59 @@ class Pi05DataAdapterTest(unittest.TestCase):
 
 
 class NormalizationTest(unittest.TestCase):
+    def test_versioned_artifact_normalization_preserves_codec_and_saved_config(self):
+        with tempfile.TemporaryDirectory() as root:
+            for kind in ("quantile", "zscore"):
+                with self.subTest(kind=kind):
+                    saved = {"type": kind, "version": 1}
+                    legacy = self.pipeline(root, saved)
+                    current = self.pipeline(root, kind)
+                    values = np.array([[-4.0, 3.0], [10.0, 3.0]], dtype=np.float32)
+                    np.testing.assert_array_equal(
+                        legacy.normalize(values, "state"), current.normalize(values, "state")
+                    )
+                    np.testing.assert_array_equal(
+                        legacy.unnormalize(values, "actions"), current.unnormalize(values, "actions")
+                    )
+                    self.assertEqual(legacy.root_config["data"]["normalization"], saved)
+            for invalid in (
+                {"type": "quantile"}, {"type": "quantile", "version": 2},
+                {"type": "quantile", "version": True},
+                {"type": "quantile", "version": 1, "clip": True},
+                {"type": [], "version": 1}, [], None,
+            ):
+                with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "normalization"):
+                    self.pipeline(root, invalid)
+
+    def test_two_camera_training_and_runtime_use_the_same_missing_view_mask(self):
+        from dobot_nexus.core.contracts import ObservationBatch
+
+        with tempfile.TemporaryDirectory() as root:
+            original = self.pipeline(root)
+            config = clone_config(original.root_config)
+            config.data.field_mapping.images = {"base": "base", "left_wrist": "hand"}
+            model = SimpleNamespace(**vars(original.model_config))
+            model.camera_mapping = {"base": "base_0_rgb", "hand": "left_wrist_0_rgb"}
+            pipeline = Pi05Pipeline(config, model)
+            pipeline.tokenize_prompt = lambda *args: (np.array([1]), np.array([True]))
+            base, hand = np.full((224, 224, 3), 42, np.uint8), np.full((224, 224, 3), 84, np.uint8)
+            state = np.array([0, 1], np.float32)
+            training = pipeline.transform_frame({
+                "base": base, "hand": hand, "observation.state": state,
+                "action": np.zeros((3, 2), np.float32), "task": "insert",
+            })
+            runtime, _ = pipeline.transform_runtime_numpy(ObservationBatch(
+                {"base": base[None], "hand": hand[None]}, state[None], ["insert"]
+            ))
+            for key in training["image"]:
+                np.testing.assert_array_equal(training["image"][key], runtime["image"][key][0])
+                self.assertEqual(training["image_mask"][key], runtime["image_mask"][key][0])
+            self.assertFalse(training["image_mask"]["right_wrist_0_rgb"])
+            self.assertFalse(training["image"]["right_wrist_0_rgb"].any())
+            model.camera_mapping["extra"] = "right_wrist_0_rgb"
+            with self.assertRaisesRegex(ValueError, "same slots"):
+                Pi05Pipeline(config, model)
+
     def test_prefetch_configuration_respects_worker_mode(self):
         with tempfile.TemporaryDirectory() as root:
             pipeline = self.pipeline(root)
@@ -208,9 +261,58 @@ class PipelineAssetsTest(unittest.TestCase):
             ):
                 inference = Pi05Pipeline(config, model_config)
                 self.assertEqual(inference.tokenizer_path, deploy_tokenizer.resolve())
+                preferred = Pi05Pipeline(
+                    dict(config, runtime={"prefer_bundled_assets": True}), model_config
+                )
+                self.assertEqual(preferred.tokenizer_path, training_tokenizer.resolve())
                 config["task"] = "train"
                 training = Pi05Pipeline(config, model_config)
                 self.assertEqual(training.tokenizer_path, training_tokenizer.resolve())
+
+                # Use the real provider/config loaders and Pi0.5 asset selection with CPU weights.
+                from dobot_nexus.algorithms.rltoken.artifacts import (
+                    load_provider,
+                    write_model_bundle,
+                )
+                from dobot_nexus.core.artifacts import load_manifest
+                from dobot_nexus.core.config import _wrap, load_config
+                from tests.algorithms.rltoken.fakes import TinyFeatureModel
+
+                cfg = _wrap(
+                    dict(
+                        config,
+                        schema_version=1,
+                        train={},
+                        runtime={"device": "cpu"},
+                        model={
+                            "target": f"{TinyFeatureModel.__module__}:TinyFeatureModel",
+                            "action_dim": 1,
+                            "state_dim": 1,
+                            "action_horizon": 3,
+                        },
+                    )
+                )
+
+                def assets(model):
+                    pipeline = Pi05Pipeline(model.config, model_config)
+                    return {"data.tokenizer_path": str(pipeline.tokenizer_path)}
+
+                with mock.patch.object(TinyFeatureModel, "artifact_assets", assets):
+                    source = write_model_bundle(
+                        root / "stage-one", TinyFeatureModel(cfg, mode="train"), cfg
+                    )
+                    provider, loaded, _ = load_provider(source)
+                    declared = load_manifest(source)["files"]["model_assets"]["data.tokenizer_path"]
+                    self.assertEqual(
+                        provider.artifact_assets()["data.tokenizer_path"], str(source / declared)
+                    )
+                    exported = write_model_bundle(root / "exported", provider, loaded)
+                    saved = load_config(exported / "config_resolved.yaml")
+                    self.assertNotIn("prefer_bundled_assets", saved.runtime)
+                config["task"] = "infer"
+                self.assertEqual(
+                    Pi05Pipeline(config, model_config).tokenizer_path, deploy_tokenizer.resolve()
+                )
 
     def test_pi05_training_does_not_treat_raw_lerobot_stats_as_final_stats(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

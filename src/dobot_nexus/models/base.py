@@ -8,9 +8,11 @@ import torch
 from torch import nn
 
 from dobot_nexus.core.contracts import (
+    EncodedActionBatch,
     ObservationBatch,
     PolicyOutput,
     PolicySpec,
+    RLFeatureBatch,
     SamplingOptions,
     TrainOutput,
 )
@@ -31,6 +33,11 @@ class BaseDataAdapter(ABC):
     def decode_actions(self, actions: Any, *, aux: dict[str, Any] | None = None) -> PolicyOutput:
         raise NotImplementedError
 
+    def encode_executed_actions(
+        self, actions: Any, *, aux: dict[str, Any] | None = None
+    ) -> EncodedActionBatch:
+        raise NotImplementedError(f"{type(self).__name__} does not support RL action encoding.")
+
 
 class BaseVLAModule(nn.Module, ABC):
     """Model contract used by the common trainer and inference policy.
@@ -41,6 +48,12 @@ class BaseVLAModule(nn.Module, ABC):
     """
 
     adapter: BaseDataAdapter
+
+    def extract_rl_features(
+        self, observation: ObservationBatch, options: SamplingOptions
+    ) -> RLFeatureBatch:
+        """Extract detached features; vector rollout also needs per-row action_contexts."""
+        raise NotImplementedError(f"{type(self).__name__} does not support RL feature extraction.")
 
     @classmethod
     @abstractmethod

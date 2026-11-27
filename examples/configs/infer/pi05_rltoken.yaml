@@ -1,0 +1,29 @@
+schema_version: 1
+task: infer
+
+exp:
+  name: pi05_rltoken_infer
+  output_dir: runs
+  seed: 42
+
+model:
+  name: rltoken
+  target: dobot_nexus.algorithms.rltoken.policy:RLTokenPolicy
+  artifact: ${env:RLTOKEN_ARTIFACT,runs/rltoken_stage2/rltoken/latest_deployment.txt}
+  state_dim: null
+  action_dim: null
+  action_horizon: null
+  inference_backend: torch
+
+runtime:
+  device: auto
+
+inference:
+  # The composed Artifact supplies its fixed execution chunk size.
+  num_steps: null  # Use the trained reference sampler unless explicitly overridden.
+  seed: 42
+  warmup: true
+
+server:
+  host: 127.0.0.1
+  port: 12021

@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from dobot_nexus.data.images import read_contained_bytes
 from dobot_nexus.data.lerobot import LeRobotSource
 from dobot_nexus.data.lerobot.metadata import find_parquet_files, load_info, load_jsonl
 
@@ -96,6 +97,8 @@ class ImageLeRobotSource(torch.utils.data.Dataset):
             self.ends[current] = cursor
         if set(self.ends) != set(lengths) or cursor != len(self):
             raise ValueError("Episode metadata does not match inline-image rows.")
+        # Whole-episode subsets use the verified Parquet row order, including across shards.
+        self.episode_bounds = {ep: (end - lengths[ep], end) for ep, end in self.ends.items()}
         self.cache, self.image_cache = OrderedDict(), OrderedDict()
         self.cache_capacity = 2
         self.group_starts = []
@@ -176,10 +179,7 @@ class ImageLeRobotSource(torch.utils.data.Dataset):
             if isinstance(cell, dict):
                 data = cell.get("bytes")
                 if data is None and cell.get("path"):
-                    image_path = (self.dataset_root / cell["path"]).resolve()
-                    if not image_path.is_relative_to(self.dataset_root):
-                        raise ValueError("Inline image path escapes the dataset root.")
-                    data = image_path.read_bytes()
+                    data = read_contained_bytes(self.dataset_root, cell["path"])
             else:
                 data = cell
             if not isinstance(data, (bytes, bytearray, memoryview)):

@@ -191,7 +191,7 @@ class UserExamplesTest(unittest.TestCase):
             self.assertTrue(config.runtime.fsdp.enabled)
         self.assertEqual(
             {path.name for path in INFER_CONFIGS.glob("*.yaml")},
-            expected_configs,
+            expected_configs | {"pi05_rltoken.yaml"},
         )
         for path in INFER_CONFIGS.glob("*.yaml"):
             config = load_config(path, expected_task="infer")

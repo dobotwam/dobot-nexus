@@ -54,6 +54,7 @@
 | **VLA** | 行为克隆（BC） | **Pi0** (`Pi0Model`，state/action 各自 1–32 维) | Local / Accelerate / FSDP2、EMA、DCP 续训 | 离线、HTTP | — | **已实现（`v1.0`，CPU 契约已测）** |
 | **VLA** | 长时序记忆（Memory） | **Pi0-Memory** (`Pi0MemoryModel`，1–32 维) | 冻结 SigLIP 历史特征库（`pi0.memory.prepare`）+ BC 训练 | 按会话隔离历史推理（`MemorySession` / `pi0.memory.infer`） | — | **已实现（`v1.0`，CPU 契约已测）** |
 | **VLA** | 离线 RL / ACP | **Pi0-RECAP** (`Pi0ReCapModel`，1–32 维) | 离线 Value（`Fusion`，独立 `.pt` 检查点）+ 优势标注 + 条件策略 | 条件策略离线 / HTTP 服务 | — | **已实现（`v1.0`，CPU 契约已测）** |
+| **VLA** | 在线 RL | **Pi0.5 RLToken** | Token 重建、在线采集、Actor 与双 Critic | 冻结特征 Artifact 与 Actor | 需外部环境适配 | [实现说明](docs/rltoken_implementation.md) · [配置示例](examples/configs/rltoken/) |
 | **WM** | 视频生成（T2V / I2V） | **Wan2.2**（建议先 `TI2V-5B`，再 `I2V-A14B`） | 规划 Flow Matching、LoRA / 双专家 | 规划先离线生成，再扩展异步任务服务 | — | **设计阶段**（[`docs/wm/`](docs/wm/README.md)） |
 | **WAM** | 动作条件动力学与世界-动作统一方向 | 具身 WM + 策略融合方向 | 规划动作条件预测与推演（规划器在外部） | WM 首版之后的长期演进方向 | — | **路线图** |
 
@@ -169,6 +170,8 @@ dobot-nexus/
 │   ├── training/              # BCTrainer、Local/Accelerate/FSDP2 runtime、EMA、DCP 续训、指标记录
 │   ├── inference/             # InferencePolicy、PolicySession、HTTP/WS 服务与安全校验
 │   ├── algorithms/recap/      # 回报/优势计算、离线 Value 训练与数据集标注
+│   ├── algorithms/rltoken/    # Token、Actor/Critic、Replay 与在线训练
+│   ├── runtime/               # 执行协议、local/ 进程内后端与 ray/ 可选 RLinf 后端
 │   ├── modules/value/         # 公共 Fusion Value 网络、分布与损失组件
 │   └── models/                # BaseVLAModule/BaseDataAdapter 契约与独立模型实现（pi05/、pi0/）
 ├── data_processing/           # Dobot 双臂 14D 采集 PKL → LeRobot v2.1 转换工具

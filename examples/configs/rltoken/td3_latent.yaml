@@ -1,0 +1,13 @@
+extends: td3_online.yaml
+exp:
+  name: rltoken_td3_latent
+algorithm:
+  initialize_from: ${env:RLT_LATENT_PREWARM,/path/to/latent-prewarm.pt}
+  learning:
+    td3:
+      actor_update_action_noise: false
+model:
+  rltoken:
+    residual:
+      latent_dim: 84
+      exploration_std: 0.0
