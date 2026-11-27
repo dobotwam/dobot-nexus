@@ -15,6 +15,7 @@ from dobot_nexus.algorithms.rltoken.token import (
 from dobot_nexus.core.artifacts import resolve_artifact
 from dobot_nexus.core.config import clone_config, load_config
 from dobot_nexus.core.contracts import TrainOutput
+from dobot_nexus.models.pi05.configuration_pi05 import _torch_dtype
 from dobot_nexus.models.pi05.modeling_pi05 import Pi05Model
 
 from .data_adapter import Pi05RLDataAdapter
@@ -57,6 +58,11 @@ class Pi05RLTokenModel(Pi05Model):
             frozen_precision != "fp32" and training_mode != "token_only"
         ):
             raise ValueError("BF16 frozen provider parameters require token_only training.")
+        compute_precision = str(config.model.get(
+            "precision", config.get("runtime", {}).get("precision", "bf16")
+        ))
+        if frozen_precision == "bf16" and _torch_dtype(compute_precision, field="precision") == torch.float32:
+            raise ValueError("FP32 compute requires FP32 frozen provider parameters.")
         if config.model.get("inference_parameter_precision", frozen_precision) != frozen_precision:
             raise ValueError(
                 "RLToken inference precision must match frozen_parameter_precision."
@@ -110,6 +116,7 @@ class Pi05RLTokenModel(Pi05Model):
             # Decoder is only used in Stage 1. A full Stage 1 input was checked above.
             self.token_decoder = None
             self.eval().requires_grad_(False)
+        self._export_expected_keys = frozenset(self.state_dict().keys())
 
     def train(self, mode=True):
         super().train(mode)
@@ -168,16 +175,18 @@ class Pi05RLTokenModel(Pi05Model):
                 raise ValueError("Token-only training requires stateless Pi0.5 observations.")
             from dobot_nexus.models.pi05.torch_core.model import preprocess_observation
             with torch.no_grad(), torch.autocast(device.type, dtype=self.pi05_config.torch_dtype,
-                    enabled=self.pi05_config.torch_dtype != torch.float32
-                    and self.pi05_config.parameter_precision == "fp32"):
+                    enabled=self.pi05_config.inference_autocast_enabled):
                 prepared = preprocess_observation(batch["observation"], train=False)
                 prefix, valid, _ = self.core_model.build_prefix_cache(prepared)
             prefix, valid = select_token_prefix(self, prefix, valid, prepared)
-            latent = self.token_encoder(prefix, valid)
-            loss = reconstruction_loss(self.token_decoder(latent, prefix, valid), prefix, valid)
-            metrics = {"token_loss": loss.detach()}
-            if not self.training:
-                metrics.update(latent_diagnostics(self.token_encoder, self.token_decoder, prefix, valid))
+            with torch.autocast(device.type, dtype=self.pi05_config.torch_dtype,
+                                enabled=self.pi05_config.autocast != "off"
+                                and self.pi05_config.torch_dtype != torch.float32):
+                latent = self.token_encoder(prefix, valid)
+                loss = reconstruction_loss(self.token_decoder(latent, prefix, valid), prefix, valid)
+                metrics = {"token_loss": loss.detach()}
+                if not self.training:
+                    metrics.update(latent_diagnostics(self.token_encoder, self.token_decoder, prefix, valid))
             return TrainOutput(loss, metrics, {"token_loss": loss})
         loss_steps, prefix, valid = self.core_model.compute_loss(
             batch["observation"],
@@ -220,12 +229,13 @@ class Pi05RLTokenModel(Pi05Model):
             if not key.startswith(("core_model.", "token_encoder.", "token_decoder.")):
                 raise ValueError(f"Unexpected Stage 1 state key: {key}")
             result[key] = value
-        expected = set(self.state_dict())
-        if set(result) != expected:
+        if set(result) != self._export_expected_keys:
             raise ValueError("Stage 1 export requires all core and Token parameters.")
         self._exported_feature_spec = feature_spec(self, weights=result)
         return result
 
     def artifact_metadata(self):
+        if self.mode == "train" and self._exported_feature_spec is None:
+            raise RuntimeError("Export Stage 1 weights before querying training artifact metadata.")
         spec = self._exported_feature_spec or self.rl_feature_spec
         return {**super().artifact_metadata(), "rl_features": spec.to_dict(), "rltoken_schema": 1}

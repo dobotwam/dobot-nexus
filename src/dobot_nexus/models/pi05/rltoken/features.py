@@ -31,6 +31,8 @@ def feature_spec(model, *, weights=None):
             "stats": json.loads(pipeline.norm_stats_path.read_text()),
             "tokenizer": file_digest(pipeline.tokenizer_path),
             "operator_numerics": model.pi05_config.operator_numerics,
+            **({"autocast": model.pi05_config.autocast}
+               if model.pi05_config.autocast != "auto" else {}),
             "image_size": model.pi05_config.image_size,
             "camera_names": model.pi05_config.camera_names,
             **({"camera_mapping": model.pi05_config.camera_mapping}
@@ -89,13 +91,14 @@ def extract_features(model, observation, options):
         prefix, mask, kv = model.core_model.build_prefix_cache(prepared)
         selected, valid = select_token_prefix(model, prefix, mask, prepared)
         with torch.autocast(device.type, dtype=model.pi05_config.torch_dtype,
-                            enabled=model.pi05_config.torch_dtype != torch.float32):
+                            enabled=model.pi05_config.autocast != "off"
+                            and model.pi05_config.torch_dtype != torch.float32):
             captured["latent"] = model.token_encoder(selected, valid)
         return prefix, mask, kv
 
     dtype = model.pi05_config.torch_dtype
     with torch.autocast(device.type, dtype=dtype,
-                        enabled=dtype != torch.float32 and model.pi05_config.parameter_precision == "fp32"):
+                        enabled=model.pi05_config.inference_autocast_enabled):
         actions = model.core_model.sample_actions(
             encoded.observation, num_steps=steps, noise=noise, rng=generator, _prefix_fn=prefix_once
         )

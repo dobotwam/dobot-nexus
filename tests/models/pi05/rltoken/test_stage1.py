@@ -53,6 +53,69 @@ class Stage1Test(unittest.TestCase):
         fp32 = Pi05RLTokenModel(self.config, mode="train")
         self.assertNotEqual(spec.feature_id, fp32.rl_feature_spec.feature_id)
 
+    def test_fp32_compute_rejects_bf16_frozen_provider(self):
+        self.config.model.rltoken.training_mode = "token_only"
+        self.config.model.rltoken.frozen_parameter_precision = "bf16"
+        with self.assertRaisesRegex(ValueError, "FP32 compute"):
+            Pi05RLTokenModel(self.config, mode="train")
+
+    def test_export_uses_only_gathered_state(self):
+        model = Pi05RLTokenModel(self.config, mode="train")
+        gathered = model.state_dict()
+        expected = model.rl_feature_spec.to_dict()
+        with patch.object(model, "state_dict", side_effect=AssertionError("second FSDP gather")):
+            with self.assertRaisesRegex(RuntimeError, "Export Stage 1 weights"):
+                model.artifact_metadata()
+            self.assertEqual(set(model.export_backend_state_dict(gathered)), set(gathered))
+            self.assertEqual(model.artifact_metadata()["rl_features"], expected)
+            with self.assertRaisesRegex(ValueError, "all core"):
+                model.export_backend_state_dict({})
+
+    def test_autocast_off_disables_core_and_token_amp_and_changes_identity(self):
+        from dobot_nexus.algorithms.rltoken.identity import content_digest
+
+        self.config.model.precision = self.config.runtime.precision = "bf16"
+        self.config.model.rltoken.training_mode = "token_only"
+        model = Pi05RLTokenModel(self.config, mode="train")
+        with torch.no_grad():
+            for parameter in model.parameters():
+                parameter.fill_(0.25)
+        with patch("dobot_nexus.models.pi05.rltoken.features.content_digest",
+                   wraps=content_digest) as digest:
+            historical = model.rl_feature_spec.feature_id
+        inputs = digest.call_args.args[0]
+        self.assertNotIn("autocast", inputs)
+        # Default feature identity of these fixed weights on the rebased branch.
+        self.assertEqual(historical, "94138ea1356539f89ed11a923a6d1044083839f54109c80ef4529216321f0a8f")
+        self.config.runtime.autocast = "off"
+        disabled = Pi05RLTokenModel(self.config, mode="train")
+        disabled.load_state_dict(model.state_dict())
+        model = disabled
+        self.assertEqual(model.rl_feature_spec.feature_id, content_digest(dict(inputs, autocast="off")))
+
+        observed = []
+        hook = model.token_encoder.register_forward_pre_hook(
+            lambda *_: observed.append(("token", torch.is_autocast_enabled("cpu")))
+        )
+        self.addCleanup(hook.remove)
+        prefix = model.core_model.build_prefix_cache
+
+        def capture(obs):
+            observed.append(("core", torch.is_autocast_enabled("cpu")))
+            return prefix(obs)
+
+        image = np.zeros((1, 224, 224, 3), dtype=np.uint8)
+        observation = ObservationBatch({k: image for k in model.policy_spec.camera_names},
+                                       np.zeros((1, 2), np.float32), ["pick"])
+        with (patch.object(model.core_model, "build_prefix_cache", capture),
+              patch("dobot_nexus.models.pi05.torch_core.model.preprocess_observation",
+                    side_effect=lambda obs, **kwargs: obs),
+              torch.autocast("cpu", dtype=torch.bfloat16)):
+            model.training_step({"observation": SimpleNamespace(state=torch.ones(1, 32)),
+                                 "actions": torch.ones(1, 3, 32)})
+            model.eval().extract_rl_features(observation, SamplingOptions(seed=0))
+        self.assertEqual(observed, [("core", False), ("token", False)] * 2)
+
     def test_bf16_provider_rejects_joint_training(self):
         self.config.model.rltoken.frozen_parameter_precision = "bf16"
         with self.assertRaisesRegex(ValueError, "token_only"):
@@ -245,6 +308,14 @@ class Stage1Test(unittest.TestCase):
         tokenizer_patch.start()
         self.addCleanup(tokenizer_patch.stop)
 
+    def test_token_episode_ids_are_validated_before_disjointness(self):
+        from dobot_nexus.algorithms.rltoken.token_pretraining import TokenPretrainTrainer
+        for validation in (["0"], [False], [1.0], [-1], [1, 1], [0]):
+            self.config.algorithm = _wrap(dict(token=dict(train_episodes=[0],
+                                                          validation_episodes=validation)))
+            with self.subTest(validation=validation), self.assertRaisesRegex(ValueError, "episode"):
+                TokenPretrainTrainer(self.config, None)
+
     def test_token_trainer_publishes_validation_and_resumes(self):
         import logging
         from dobot_nexus.algorithms.rltoken.token_pretraining import TokenPretrainTrainer
@@ -273,7 +344,25 @@ class Stage1Test(unittest.TestCase):
             self.assertFalse(report["accepted"])  # Constant fake prefixes cannot pass shuffle dependence.
             self.config.train.resume_from = result.checkpoint
             self.config.train.max_steps = 2
+            with patch("dobot_nexus.algorithms.rltoken.token_pretraining.feature_metadata",
+                       side_effect=OSError("bundle staged")), self.assertRaisesRegex(OSError, "bundle staged"):
+                TokenPretrainTrainer(self.config, experiment).run()
+            self.assertFalse((experiment.run_dir / "token/step-000000002").exists())
+            self.assertEqual((experiment.run_dir / "token/last").read_text(), "step-000000001")
+            # Interrupt the second publication after the complete bundle is in place,
+            # before the last pointer and resume state have advanced.
+            import os
+            replace_path = os.replace
+            def interrupt(path, target, **kwargs):
+                if path == "last" and "src_dir_fd" in kwargs:
+                    raise OSError("interrupted publication")
+                return replace_path(path, target, **kwargs)
+            with patch.object(os, "replace", interrupt), self.assertRaisesRegex(OSError, "interrupted"):
+                TokenPretrainTrainer(self.config, experiment).run()
+            self.assertEqual(torch.load(result.checkpoint, weights_only=True)["step"], 1)
             resumed = TokenPretrainTrainer(self.config, experiment).run()
+            self.assertEqual(torch.load(resumed.checkpoint, weights_only=True)["step"], 2)
+            self.assertEqual((experiment.run_dir / "token/last").read_text(), "step-000000002")
             self.assertEqual(resumed.global_step, 2)
 
             self.config.train.resume_from = None
