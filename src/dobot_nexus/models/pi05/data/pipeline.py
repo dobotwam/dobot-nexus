@@ -306,7 +306,7 @@ class Pi05Pipeline:
         )
         deployment_tokenizer = (
             os.getenv("OPENPI_TOKENIZER_PATH")
-            if str(root_config.get("task", "")).lower() == "infer"
+            if task == "infer" and not root_config.get("runtime", {}).get("prefer_bundled_assets")
             else None
         )
         self.tokenizer_path = resolve_tokenizer_path(

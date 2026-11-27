@@ -1,15 +1,47 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import shutil
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from dobot_nexus.core.config import resolve_autocast, save_config, to_plain_dict
+
+_verified_snapshot = ContextVar("verified_artifact_snapshot", default=None)
+
+
+@contextmanager
+def verified_artifact_snapshot(artifact_dir, manifest, training_config):
+    """Pin the artifact metadata used by constructors in this execution context."""
+    root = Path(artifact_dir).expanduser().resolve()
+    token = _verified_snapshot.set((root, copy.deepcopy((manifest, training_config))))
+    try:
+        yield
+    finally:
+        _verified_snapshot.reset(token)
+
+
+def get_verified_artifact_snapshot(path, *, resolve_pointer=True):
+    active = _verified_snapshot.get()
+    if active is None:
+        return None
+    root, snapshot = active
+    candidate = Path(path).expanduser().resolve()
+    if candidate != root:
+        if not resolve_pointer:
+            return None
+        try:
+            if resolve_artifact(candidate) != root:
+                return None
+        except (FileNotFoundError, ValueError):
+            return None
+    return copy.deepcopy(snapshot)
 
 
 def resume_fingerprint(config) -> str:
@@ -116,6 +148,9 @@ def _save_manifest(payload: dict[str, Any], path: Path) -> None:
 
 def resolve_artifact(path: str | Path) -> Path:
     candidate = Path(path).expanduser().resolve()
+    active = _verified_snapshot.get()
+    if active is not None and candidate == active[0]:
+        return candidate
     if candidate.is_file() and candidate.name in {
         "latest.txt",
         "latest_deployment.txt",
@@ -134,13 +169,16 @@ def resolve_artifact(path: str | Path) -> Path:
             candidate = _resolve_latest_file(pointer)
     if not candidate.is_dir():
         raise FileNotFoundError(f"Artifact directory not found: {candidate}")
-    if not (candidate / "manifest.yaml").is_file():
+    if (active is None or candidate != active[0]) and not (candidate / "manifest.yaml").is_file():
         raise FileNotFoundError(f"Artifact manifest not found: {candidate / 'manifest.yaml'}")
     return candidate
 
 
 def load_manifest(artifact_dir: str | Path) -> dict[str, Any]:
     root = resolve_artifact(artifact_dir)
+    snapshot = get_verified_artifact_snapshot(root, resolve_pointer=False)
+    if snapshot is not None:
+        return snapshot[0]
     with (root / "manifest.yaml").open("r", encoding="utf-8") as handle:
         payload = yaml.safe_load(handle) or {}
     if payload.get("schema_version") not in {1, 2}:

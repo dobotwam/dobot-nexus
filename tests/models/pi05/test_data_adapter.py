@@ -261,9 +261,58 @@ class PipelineAssetsTest(unittest.TestCase):
             ):
                 inference = Pi05Pipeline(config, model_config)
                 self.assertEqual(inference.tokenizer_path, deploy_tokenizer.resolve())
+                preferred = Pi05Pipeline(
+                    dict(config, runtime={"prefer_bundled_assets": True}), model_config
+                )
+                self.assertEqual(preferred.tokenizer_path, training_tokenizer.resolve())
                 config["task"] = "train"
                 training = Pi05Pipeline(config, model_config)
                 self.assertEqual(training.tokenizer_path, training_tokenizer.resolve())
+
+                # Use the real provider/config loaders and Pi0.5 asset selection with CPU weights.
+                from dobot_nexus.algorithms.rltoken.artifacts import (
+                    load_provider,
+                    write_model_bundle,
+                )
+                from dobot_nexus.core.artifacts import load_manifest
+                from dobot_nexus.core.config import _wrap, load_config
+                from tests.algorithms.rltoken.fakes import TinyFeatureModel
+
+                cfg = _wrap(
+                    dict(
+                        config,
+                        schema_version=1,
+                        train={},
+                        runtime={"device": "cpu"},
+                        model={
+                            "target": f"{TinyFeatureModel.__module__}:TinyFeatureModel",
+                            "action_dim": 1,
+                            "state_dim": 1,
+                            "action_horizon": 3,
+                        },
+                    )
+                )
+
+                def assets(model):
+                    pipeline = Pi05Pipeline(model.config, model_config)
+                    return {"data.tokenizer_path": str(pipeline.tokenizer_path)}
+
+                with mock.patch.object(TinyFeatureModel, "artifact_assets", assets):
+                    source = write_model_bundle(
+                        root / "stage-one", TinyFeatureModel(cfg, mode="train"), cfg
+                    )
+                    provider, loaded, _ = load_provider(source)
+                    declared = load_manifest(source)["files"]["model_assets"]["data.tokenizer_path"]
+                    self.assertEqual(
+                        provider.artifact_assets()["data.tokenizer_path"], str(source / declared)
+                    )
+                    exported = write_model_bundle(root / "exported", provider, loaded)
+                    saved = load_config(exported / "config_resolved.yaml")
+                    self.assertNotIn("prefer_bundled_assets", saved.runtime)
+                config["task"] = "infer"
+                self.assertEqual(
+                    Pi05Pipeline(config, model_config).tokenizer_path, deploy_tokenizer.resolve()
+                )
 
     def test_pi05_training_does_not_treat_raw_lerobot_stats_as_final_stats(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
