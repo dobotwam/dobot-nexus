@@ -17,9 +17,9 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/fengzx99/dobot-nexus"
-Issues = "https://github.com/fengzx99/dobot-nexus/issues"
-Documentation = "https://github.com/fengzx99/dobot-nexus/tree/main/docs"
+Repository = "https://github.com/dobotwam/dobot-nexus"
+Issues = "https://github.com/dobotwam/dobot-nexus/issues"
+Documentation = "https://github.com/dobotwam/dobot-nexus/tree/main/docs"
 
 [project.optional-dependencies]
 accelerate = ["accelerate>=1.14,<2"]

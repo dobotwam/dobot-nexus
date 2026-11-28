@@ -10,6 +10,7 @@ import numpy as np
 from dobot_nexus.core.config import load_config
 from dobot_nexus.core.contracts import ObservationBatch, SamplingOptions
 from dobot_nexus.data.observation import observation_from_json
+from dobot_nexus.data.observation import observation_from_npz as _load_npz_observation
 from dobot_nexus.inference import load_policy
 
 
@@ -18,20 +19,7 @@ def _load_observation(path: str | Path) -> ObservationBatch:
     if source.suffix == ".json":
         return observation_from_json(json.loads(source.read_text(encoding="utf-8")))
     if source.suffix == ".npz":
-        with np.load(source, allow_pickle=False) as payload:
-            images = {
-                key.removeprefix("image."): payload[key]
-                for key in payload.files
-                if key.startswith("image.")
-            }
-            return ObservationBatch.from_value(
-                {
-                    "images": images,
-                    "state": payload["state"],
-                    "prompt": payload["prompt"].tolist(),
-                    "env_ids": payload["env_ids"].tolist() if "env_ids" in payload else None,
-                }
-            )
+        return _load_npz_observation(source)
     raise ValueError("Inference input must be .json or .npz.")
 
 

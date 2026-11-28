@@ -54,11 +54,11 @@ Instead of coupling training loops, inference servers, and robot hardware to a s
 | **VLA** | Behavior Cloning (BC) | **Pi0** (`Pi0Model`, state/action each 1–32D) | Local / Accelerate / FSDP2, EMA, DCP | Offline, HTTP | — | **Implemented (`v1.0`, CPU contracts tested)** |
 | **VLA** | Long-Horizon Memory | **Pi0-Memory** (`Pi0MemoryModel`, 1–32D) | Frozen SigLIP feature store (`pi0.memory.prepare`) + BC loop | Per-session history (`MemorySession` / `pi0.memory.infer`) | — | **Implemented (`v1.0`, CPU contracts tested)** |
 | **VLA** | Offline RL / ACP | **Pi0-RECAP** (`Pi0ReCapModel`, 1–32D) | Offline Value (`Fusion`, separate `.pt` ckpt) + advantage labeling + ACP | Conditional policy Offline / HTTP | — | **Implemented (`v1.0`, CPU contracts tested)** |
-| **VLA** | Online RL | **Pi0.5 RLToken** | Token reconstruction, rollout, actor and twin critics | Frozen feature Artifact and actor | External environment adapter | [Implementation](docs/rltoken_implementation.md) · [Recipes](examples/configs/rltoken/) |
+| **VLA** | Online RL | **Pi0.5 RLToken** | Token reconstruction, rollout, actor and twin critics | Frozen feature Artifact and actor | External environment adapter | **Implemented (`dev`, CPU contracts tested)** · [Guide](docs/rltoken_implementation.md) · [Recipes](examples/configs/rltoken/) |
 | **WM** | Video Generation (T2V / I2V) | **Wan2.2** (proposed `TI2V-5B` first, then `I2V-A14B`) | Proposed flow matching, LoRA / dual-expert | Proposed offline generator, then async job server | — | **In Design** ([`docs/wm/`](docs/wm/README.md)) |
 | **WAM** | Action-Conditioned Dynamics & World-Action Unification | Embodied WM + Policy Direction | Proposed action-conditioned rollout (planner external) | Research direction beyond WM v1 | — | **Roadmap** |
 
-> **Scope & verification note**: All **VLA** rows above are implemented in `v1.0` and covered by fast CPU unit/contract tests in CI (live GPU training, FSDP2 scaling, CUDA Graph speedups, and robot task success require your own GPU/hardware verification; see [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md) for the documented ATOM D field setup). **WM (Wan2.2)** currently consists of design and pseudocode specifications under [`docs/wm/`](docs/wm/README.md) with no runnable WM CLI/code yet; **WAM** is a longer-term platform direction.
+> **Scope & verification note**: BC, Memory, and RECAP **VLA** rows ship in the `v1.0.0` release, while **Pi0.5 RLToken** is implemented on the `dev` branch (post-`v1.0.0`); all implemented VLA rows are covered by fast CPU unit/contract tests in CI (live GPU training, FSDP2 scaling, CUDA Graph speedups, and robot task success require your own GPU/hardware verification; see [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md) for the documented ATOM D field setup). **WM (Wan2.2)** currently consists of design and pseudocode specifications under [`docs/wm/`](docs/wm/README.md) with no runnable WM CLI/code yet; **WAM** is a longer-term platform direction.
 
 ### Supported Data & Robot Contracts
 
@@ -80,7 +80,7 @@ Instead of coupling training loops, inference servers, and robot hardware to a s
 Package constraints: Python `>=3.10` (Python `3.11` used in CI) and PyTorch `2.10` (`torch>=2.10,<2.11`). For the GPU training/inference recipe below, use Linux with BF16-capable NVIDIA GPUs (CPU local execution and FP32 inference are also supported; see [`docs/environments.md`](docs/environments.md) and [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md) for field-specific environments).
 
 ```bash
-git clone https://github.com/fengzx99/dobot-nexus.git
+git clone https://github.com/dobotwam/dobot-nexus.git
 cd dobot-nexus
 
 # Create an isolated Pi0.5 environment (with HTTP serve + WebSocket extras)

@@ -202,6 +202,16 @@ def _publish_step(root, model, config, state, report, improved, *, expected_pare
     return generation
 
 
+def _validation_batches(size, batch_size):
+    half = size // 2
+    pairs = max(1, batch_size // 2)
+    for start in range(0, half, pairs):
+        stop = min(start + pairs, half)
+        yield [*range(start, stop), *range(half + start, half + stop)]
+    if size % 2:
+        yield [half - 1, size - 1]
+
+
 class TokenPretrainTrainer:
     def __init__(self, config, experiment):
         self.config, self.experiment = config, experiment
@@ -243,6 +253,9 @@ class TokenPretrainTrainer:
         build_loader = (lambda conf: import_from_string(loader_target)(model, conf)) if loader_target else model.build_train_dataloader
         train_loader = build_loader(train_cfg)
         validation_loader = build_loader(val_cfg)
+        val_size = len(validation_loader.dataset)
+        if val_size < 2:
+            raise ValueError("Token validation requires at least two frames.")
         # Final model config describes training data; normalization/prompt assets are shared.
         if not loader_target:
             model.build_train_dataloader(train_cfg)
@@ -286,18 +299,26 @@ class TokenPretrainTrainer:
             model.eval()
             values, count = {}, 0
             with torch.no_grad():
-                for offset in range(0, len(validation_loader.dataset), cfg.data.batch_size):
-                    rows = [validation_loader.dataset[i] for i in range(offset,
-                            min(offset + cfg.data.batch_size, len(validation_loader.dataset)))]
+                for indices in _validation_batches(val_size, cfg.data.batch_size):
+                    rows = [validation_loader.dataset[i] for i in indices]
                     raw = validation_loader.collate_fn(rows)
                     with torch.autocast(device.type, dtype=dtype, enabled=autocast):
                         result = model.training_step(model.adapter.encode_train_batch(raw, device))
-                    for key, value in result.metrics.items():
-                        values[key] = values.get(key, 0.) + float(value) * len(rows)
-                    count += len(rows)
-            if not count:
-                raise ValueError("Token validation is empty.")
+                    losses = dict(result.metrics)
+                    weight = int(losses.pop("valid_tokens", len(rows)))
+                    # Older providers report ratios and token_loss without ablated losses.
+                    base = max(float(losses.get("reconstruction", losses["token_loss"])), 1e-12)
+                    for kind in ("zero", "shuffle"):
+                        ratio = losses.pop(f"{kind}_ratio")
+                        if f"{kind}_loss" not in losses:
+                            losses[f"{kind}_loss"] = float(ratio) * base
+                    for key, value in losses.items():
+                        values[key] = values.get(key, 0.) + float(value) * weight
+                    count += weight
             metrics = {key: value / count for key, value in values.items()}
+            denominator = max(metrics.get("reconstruction", metrics["token_loss"]), 1e-12)
+            for kind in ("zero", "shuffle"):
+                metrics[f"{kind}_ratio"] = metrics[f"{kind}_loss"] / denominator
             accepted = (metrics["zero_ratio"] >= settings.min_zero_ratio and
                         metrics["shuffle_ratio"] >= settings.min_shuffle_ratio)
             improved = metrics["token_loss"] < best

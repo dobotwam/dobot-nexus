@@ -54,11 +54,11 @@
 | **VLA** | 行为克隆（BC） | **Pi0** (`Pi0Model`，state/action 各自 1–32 维) | Local / Accelerate / FSDP2、EMA、DCP 续训 | 离线、HTTP | — | **已实现（`v1.0`，CPU 契约已测）** |
 | **VLA** | 长时序记忆（Memory） | **Pi0-Memory** (`Pi0MemoryModel`，1–32 维) | 冻结 SigLIP 历史特征库（`pi0.memory.prepare`）+ BC 训练 | 按会话隔离历史推理（`MemorySession` / `pi0.memory.infer`） | — | **已实现（`v1.0`，CPU 契约已测）** |
 | **VLA** | 离线 RL / ACP | **Pi0-RECAP** (`Pi0ReCapModel`，1–32 维) | 离线 Value（`Fusion`，独立 `.pt` 检查点）+ 优势标注 + 条件策略 | 条件策略离线 / HTTP 服务 | — | **已实现（`v1.0`，CPU 契约已测）** |
-| **VLA** | 在线 RL | **Pi0.5 RLToken** | Token 重建、在线采集、Actor 与双 Critic | 冻结特征 Artifact 与 Actor | 需外部环境适配 | [实现说明](docs/rltoken_implementation.md) · [配置示例](examples/configs/rltoken/) |
+| **VLA** | 在线 RL | **Pi0.5 RLToken** | Token 重建、在线采集、Actor 与双 Critic | 冻结特征 Artifact 与 Actor | 需外部环境适配 | **已实现（`dev`，CPU 契约已测）** · [实现说明](docs/rltoken_implementation.md) · [配置示例](examples/configs/rltoken/) |
 | **WM** | 视频生成（T2V / I2V） | **Wan2.2**（建议先 `TI2V-5B`，再 `I2V-A14B`） | 规划 Flow Matching、LoRA / 双专家 | 规划先离线生成，再扩展异步任务服务 | — | **设计阶段**（[`docs/wm/`](docs/wm/README.md)） |
 | **WAM** | 动作条件动力学与世界-动作统一方向 | 具身 WM + 策略融合方向 | 规划动作条件预测与推演（规划器在外部） | WM 首版之后的长期演进方向 | — | **路线图** |
 
-> **范围与验证说明**：表中各 **VLA** 条目均已在 `v1.0` 中实现并有对应的 CI 快速 CPU 单元/契约测试覆盖（实际 GPU 训练、FSDP2 扩展、CUDA Graph 加速和真机任务成功率需在目标 GPU/硬件环境中验证；ATOM D 现场部署配置见 [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md)）。**WM（Wan2.2）** 目前仅为 [`docs/wm/`](docs/wm/README.md) 下的架构与伪代码设计文档，尚未包含可运行的 WM CLI 或代码实现；**WAM** 为更长期的平台演进方向。
+> **范围与验证说明**：表中 BC、Memory 与 RECAP 各 **VLA** 条目已在 `v1.0.0` 发布版中提供，**Pi0.5 RLToken** 则已在 `dev` 分支实现（`v1.0.0` 之后新增）；上述所有已实现 VLA 条目均有对应的 CI 快速 CPU 单元/契约测试覆盖（实际 GPU 训练、FSDP2 扩展、CUDA Graph 加速和真机任务成功率需在目标 GPU/硬件环境中验证；ATOM D 现场部署配置见 [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md)）。**WM（Wan2.2）** 目前仅为 [`docs/wm/`](docs/wm/README.md) 下的架构与伪代码设计文档，尚未包含可运行的 WM CLI 或代码实现；**WAM** 为更长期的平台演进方向。
 
 ### 数据格式与真机契约支持
 
@@ -80,7 +80,7 @@
 包版本约束：Python `>=3.10`（CI 使用 Python `3.11`）与 PyTorch `2.10`（`torch>=2.10,<2.11`）。下方 GPU 训练/推理配方适用于配备支持 BF16 的 NVIDIA GPU 的 Linux 主机（同时支持 CPU 本地运行与 FP32 推理；不同环境配置见 [`docs/environments.md`](docs/environments.md) 及 [`docs/robots/atom_d_inference.md`](docs/robots/atom_d_inference.md)）。
 
 ```bash
-git clone https://github.com/fengzx99/dobot-nexus.git
+git clone https://github.com/dobotwam/dobot-nexus.git
 cd dobot-nexus
 
 # 创建独立的 Pi0.5 虚拟环境（同时安装 HTTP serve 与 WebSocket 服务依赖）

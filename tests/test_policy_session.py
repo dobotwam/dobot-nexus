@@ -213,7 +213,7 @@ class PolicySessionTest(unittest.TestCase):
         def predict(obs, options):
             n = int(obs.state[0, 0])
             shared.actions[0, :, 0] = [n, n + 1]
-            shared.valid_mask[0] = [n == 1, n == 8]
+            shared.valid_mask[0] = [True, n == 8]
             shared.timing["ms"] = n
             shared.aux["sample"][0] = n
             return shared
@@ -251,8 +251,8 @@ class PolicySessionTest(unittest.TestCase):
             np.testing.assert_array_equal(first.result(timeout=10), [[1]])
         for session, n in ((a, 1), (b, 8)):
             output = outputs[n]
-            np.testing.assert_array_equal(session.act(observation(n)), [[n + 1]])
+            np.testing.assert_array_equal(session.act(observation(n)), [[n if n == 1 else n + 1]])
             np.testing.assert_array_equal(output.actions.ravel(), [n, n + 1])
-            np.testing.assert_array_equal(output.valid_mask[0], [n == 1, n == 8])
+            np.testing.assert_array_equal(output.valid_mask[0], [True, n == 8])
             self.assertEqual(output.timing, {"ms": n})
             np.testing.assert_array_equal(output.aux["sample"], [n])

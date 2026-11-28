@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -48,7 +49,7 @@ class ObservationBatch:
                 },
                 state=_as_numpy(value.get("state")),
                 prompt=list(raw_prompt or []),
-                env_ids=list(value["env_ids"]) if value.get("env_ids") is not None else None,
+                env_ids=value.get("env_ids"),
                 timestamps=(
                     _as_numpy(value["timestamps"]) if value.get("timestamps") is not None else None
                 ),
@@ -99,8 +100,22 @@ class ObservationBatch:
         if not images:
             raise ValueError("At least one camera image is required.")
 
-        if self.env_ids is not None and len(self.env_ids) != batch_size:
-            raise ValueError("env_ids must contain one id per observation.")
+        if self.env_ids is not None:
+            if isinstance(self.env_ids, np.ndarray):
+                self.env_ids = self.env_ids.tolist()
+            if (
+                isinstance(self.env_ids, (str, bytes)) or not isinstance(self.env_ids, Sequence)
+                or len(self.env_ids) != batch_size
+                or not all(isinstance(item, str) for item in self.env_ids)
+            ):
+                raise ValueError("env_ids must contain one string per observation.")
+            self.env_ids = list(self.env_ids)
+        if self.timestamps is not None:
+            times = _as_numpy(self.timestamps)
+            if (times.shape != (batch_size,) or times.dtype.kind not in "iuf"
+                    or not np.isfinite(times).all()):
+                raise ValueError("timestamps must contain one finite numeric value per observation.")
+            self.timestamps = times
         control = {}
         for name, raw in self.control.items():
             signal = _as_numpy(raw)
