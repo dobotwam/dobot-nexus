@@ -80,6 +80,9 @@ PY
 | `image.base` / `image.left_wrist` / `image.right_wrist` | `uint8[H,W,3]` RGB |
 | `state` | `float32[state_dim]`，与采集协议相同的单位 |
 | `prompt` | 一个非空字符串组成的数组 |
+| `env_ids`（可选） | 环境标识字符串数组（每条观测一个） |
+| `timestamps`（可选） | 时间戳数值数组 |
+| `control.<name>`（可选） | `bool[B]`（或单样本 `bool` 标量）控制信号，如 `control.rlt_switch_flags` |
 
 adapter 会执行训练时对应的归一化和动作逆变换，输入应保留真实状态数值。
 

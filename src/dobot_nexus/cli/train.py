@@ -25,15 +25,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     config = load_config(args.config, list(args.overrides), expected_task="train")
     trainer_type = trainer_class(config)
     if trainer_type is BCTrainer:
-        trainer = BCTrainer(config)
-        experiment = trainer.experiment
-    else:
-        experiment = Experiment.from_config(config)
-        trainer = trainer_type(config, experiment)
-    result = trainer.run()
-    experiment.logger.info(
-        "Training complete: step=%d checkpoint=%s", result.global_step, result.checkpoint
-    )
+        BCTrainer(config).run()
+        return
+    with Experiment.from_config(config) as experiment:
+        result = trainer_type(config, experiment).run()
+        if config.train.get("resume_from") and not experiment.resolved_config_written:
+            experiment.write_resolved_config(config)
+        experiment.logger.info(
+            "Training complete: step=%d checkpoint=%s", result.global_step, result.checkpoint
+        )
 
 
 if __name__ == "__main__":

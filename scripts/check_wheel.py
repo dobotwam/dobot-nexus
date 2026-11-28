@@ -45,11 +45,29 @@ def main():
 import importlib.metadata, json, pathlib, sys, tempfile
 from unittest.mock import patch
 sys.path.insert(0, INSTALLED)
+import torch
 import dobot_nexus
+from dobot_nexus.core.import_utils import import_from_string
 from dobot_nexus.models.pi05.deploy.server import _load_policy, parse_args
 assert pathlib.Path(dobot_nexus.__file__).is_relative_to(INSTALLED)
 assert importlib.metadata.version('dobot-nexus') == dobot_nexus.__version__
 assert importlib.metadata.metadata('dobot-nexus')['License-Expression'] == 'Apache-2.0'
+targets = (
+    'dobot_nexus.models.pi0.modeling_pi0:Pi0Model',
+    'dobot_nexus.models.pi0.memory.modeling_memory:Pi0MemoryModel',
+    'dobot_nexus.models.pi0.modeling_recap:Pi0ReCapModel',
+    'dobot_nexus.models.pi05.modeling_pi05:Pi05Model',
+    'dobot_nexus.models.pi05.memory.modeling_memory:Pi05MemoryModel',
+    'dobot_nexus.models.pi05.modeling_recap:Pi05ReCapModel',
+    'dobot_nexus.models.pi05.rltoken.modeling_stage1:Pi05RLTokenModel',
+    'dobot_nexus.algorithms.rltoken.policy:RLTokenPolicy',
+    'dobot_nexus.algorithms.rltoken.token_pretraining:TokenPretrainTrainer',
+    'dobot_nexus.algorithms.rltoken.pretraining:RLTokenCacheTrainer',
+    'dobot_nexus.algorithms.rltoken.pretraining:RLTokenPrewarmTrainer',
+    'dobot_nexus.algorithms.rltoken.training:RLTokenTrainer',
+)
+for target in targets:
+    import_from_string(target)
 for target in ('dobot_nexus.models.pi05.modeling_pi05:Pi05Model',
                'dobot_nexus.models.pi05.modeling_recap:Pi05ReCapModel',
                'dobot_nexus.models.pi05.memory.modeling_memory:Pi05MemoryModel',
@@ -63,7 +81,7 @@ for target in ('dobot_nexus.models.pi05.modeling_pi05:Pi05Model',
         assert config.model.target == target
         assert config.model.artifact == artifact
 print(json.dumps({'version': dobot_nexus.__version__, 'profiles_loaded': 4,
-                  'installed_module': dobot_nexus.__file__}))
+                  'targets_imported': len(targets), 'installed_module': dobot_nexus.__file__}))
 '''
         subprocess.run([sys.executable, '-I', '-c', 'INSTALLED='+repr(str(installed))+'\n'+probe],
                        cwd=workspace, check=True, env={k: v for k, v in os.environ.items()

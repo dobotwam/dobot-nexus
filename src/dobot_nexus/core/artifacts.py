@@ -4,10 +4,13 @@ import copy
 import hashlib
 import json
 import shutil
+import stat
+import tempfile
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import yaml
 
@@ -135,9 +138,12 @@ def _resolve_latest_file(path: Path) -> Path:
 
 
 def _write_pointer(path: Path, target_name: str) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(f"{target_name}\n", encoding="utf-8")
-    temporary.replace(path)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(f"{target_name}\n", encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _save_manifest(payload: dict[str, Any], path: Path) -> None:
@@ -206,8 +212,6 @@ class ArtifactManager:
         final: bool = False,
         ema=None,
     ) -> Path:
-        import torch
-
         del final  # Deployment artifacts are intentionally produced at every checkpoint.
         resume_limit = config.get("train", {}).get("resume_limit", 2)
         if resume_limit is not None:
@@ -216,21 +220,31 @@ class ArtifactManager:
                 raise ValueError("train.resume_limit must be null or a non-negative integer.")
         checkpoint_name = f"step_{step:08d}"
         checkpoint_dir = self.checkpoint_root / checkpoint_name
-        staging_dir = self.checkpoint_root / f".{checkpoint_name}.tmp"
-
-        preflight_error = None
+        staging_dir = preflight_error = None
         if runtime.is_main_process:
-            if checkpoint_dir.exists():
-                preflight_error = f"Checkpoint already exists: {checkpoint_dir}"
-            else:
-                if staging_dir.exists():
-                    shutil.rmtree(staging_dir)
-                staging_dir.mkdir(parents=True)
-        preflight_error = runtime.broadcast_object(preflight_error)
-        if preflight_error:
-            raise FileExistsError(preflight_error)
-        runtime.wait_for_everyone()
+            try:
+                if checkpoint_dir.exists():
+                    raise FileExistsError(f"Checkpoint already exists: {checkpoint_dir}")
+                staging_dir = Path(tempfile.mkdtemp(
+                    dir=self.checkpoint_root, prefix=f".{checkpoint_name}.tmp."
+                ))
+            except OSError as exc:
+                preflight_error = exc
+        staging_dir, preflight_error = runtime.broadcast_object((staging_dir, preflight_error))
+        if preflight_error is not None:
+            raise preflight_error
+        try:
+            return self._save_staged(staging_dir, checkpoint_dir, model, runtime, optimizer, scheduler,
+                                     config, step, metrics, data_state, ema, resume_limit)
+        finally:
+            if runtime.is_main_process and staging_dir.exists():
+                shutil.rmtree(staging_dir)
 
+    def _save_staged(self, staging_dir, checkpoint_dir, model, runtime, optimizer, scheduler,
+                     config, step, metrics, data_state, ema, resume_limit):
+        import torch
+
+        checkpoint_name = checkpoint_dir.name
         resume_enabled = resume_limit != 0
         if resume_enabled:
             if ema is not None:
@@ -343,6 +357,7 @@ class ArtifactManager:
                     "files": files,
                 }
                 _save_manifest(manifest, staging_dir / "manifest.yaml")
+                staging_dir.chmod(stat.S_IMODE(self.checkpoint_root.stat().st_mode))
                 staging_dir.replace(checkpoint_dir)
                 _write_pointer(self.checkpoint_root / "latest_deployment.txt", checkpoint_name)
                 _write_pointer(self.checkpoint_root / "latest.txt", checkpoint_name)

@@ -1,6 +1,7 @@
-"""JSON observation decoding shared by offline and HTTP inference."""
+"""JSON and NPZ observation decoding shared by offline and HTTP inference."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -30,3 +31,18 @@ def observation_from_json(value: Any) -> ObservationBatch:
     payload["images"] = images
     return ObservationBatch.from_value(payload)
 
+
+def observation_from_npz(path: str | Path) -> ObservationBatch:
+    payload = {"images": {}, "control": {}}
+    with np.load(path, allow_pickle=False) as archive:
+        for key in archive.files:
+            group, _, name = key.partition(".")
+            if name and group in ("image", "images", "control"):
+                payload["control" if group == "control" else "images"][name] = archive[key]
+            elif key in ("prompt", "prompts", "env_ids"):
+                payload[key] = archive[key].tolist()
+            elif key in ("state", "timestamps"):
+                payload[key] = archive[key]
+            else:
+                raise ValueError(f"Unknown NPZ observation key: {key!r}")
+    return ObservationBatch.from_value(payload)

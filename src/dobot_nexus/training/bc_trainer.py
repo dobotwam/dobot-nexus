@@ -100,7 +100,12 @@ class BCTrainer:
                 experiment if experiment is not None
                 else Experiment.from_config(config, runtime=self.runtime)
             )
-            self.artifacts = ArtifactManager(self.experiment.run_dir)
+            try:
+                self.artifacts = ArtifactManager(self.experiment.run_dir)
+            except BaseException:
+                if (close := getattr(self.experiment, "close", None)) is not None:
+                    close()
+                raise
         except BaseException:
             self.runtime.end_training()
             raise
@@ -122,9 +127,16 @@ class BCTrainer:
             raise
         else:
             self.tracker.finish(exit_code=0)
+            self.experiment.logger.info(
+                "Training complete: step=%d checkpoint=%s", result.global_step, result.checkpoint
+            )
             return result
         finally:
-            self.runtime.end_training()
+            try:
+                if (close := getattr(self.experiment, "close", None)) is not None:
+                    close()
+            finally:
+                self.runtime.end_training()
 
     def _run(self) -> TrainResult:
         config = self.config
@@ -224,6 +236,8 @@ class BCTrainer:
             iterator = chain(() if first_batch is sentinel else (first_batch,), iterator)
             restore_worker_generator(data_loader, restored_data["generator_states"])
             restore_rng_state(restored["rng_state"])
+            if (write_config := getattr(self.experiment, "write_resolved_config", None)) is not None:
+                write_config(config)
             if self.runtime.is_main_process:
                 self.experiment.logger.info(
                     "Resumed checkpoint=%s step=%d data_epoch=%d batches_in_epoch=%d",

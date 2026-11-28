@@ -215,8 +215,11 @@ def build_token_modules(config):
 def latent_diagnostics(encoder, decoder, prefix, valid):
     """Validation-only dependence diagnostics; no random stream is consumed."""
     latent = encoder(prefix, valid)
+    if latent.shape[0] < 2:
+        raise ValueError("Shuffle diagnostics require at least two validation frames.")
     original = reconstruction_loss(decoder(latent, prefix, valid), prefix, valid)
     zero = reconstruction_loss(decoder(torch.zeros_like(latent), prefix, valid), prefix, valid)
-    shuffled = reconstruction_loss(decoder(latent.roll(1, 0), prefix, valid), prefix, valid)
-    return {"reconstruction": float(original), "zero_ratio": float(zero / original.clamp_min(1e-12)),
+    shuffled = reconstruction_loss(decoder(latent.roll(max(1, latent.shape[0] // 2), 0), prefix, valid), prefix, valid)
+    return {"valid_tokens": int(valid.sum()), "zero_loss": float(zero), "shuffle_loss": float(shuffled),
+            "reconstruction": float(original), "zero_ratio": float(zero / original.clamp_min(1e-12)),
             "shuffle_ratio": float(shuffled / original.clamp_min(1e-12))}

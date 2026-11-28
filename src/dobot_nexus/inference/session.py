@@ -79,7 +79,16 @@ class PolicySession:
             )
             # A policy may reuse its output storage on its very next prediction.
             # Staged sessions can safely share this immutable, session-owned chunk.
-            self._buffer = output.actions[:, : self.options.execute_steps].copy()
+            steps = self.options.execute_steps
+            if output.valid_mask is not None:
+                invalid = np.flatnonzero(~output.valid_mask.all(axis=0))
+                if invalid.size:
+                    steps = min(steps, int(invalid[0]))
+                if steps == 0:
+                    raise ValueError(
+                        "Policy returned an invalid action at step 0 (`valid_mask[:, 0]` must be True)."
+                    )
+            self._buffer = output.actions[:, :steps].copy()
             self._buffer.setflags(write=False)
             self._cursor = 0
             self._batch_size = canonical.batch_size
